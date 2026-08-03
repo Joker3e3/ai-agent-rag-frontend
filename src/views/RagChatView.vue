@@ -5,12 +5,21 @@ import { onMounted } from 'vue'
 
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  buildSourcesHistoryPayload,
+  createAssistantMessage,
+  getRequestIdFromResponse,
+  getSourcesHistoryErrorMessage,
+  getSourcesHistoryState,
+} from '../services/ragSources'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
+const USER_ID = 'Joker3e'
 
 onMounted(() => { loadDocuments() })
 
 let pollingTimer = null
+let activeRequestCount = 0
 
 // 用户输入框内容
 const question = ref('')
@@ -50,7 +59,7 @@ const uploadFile = async () => {
   uploading.value = true
   try {
     const formData = new FormData()
-    formData.append('user_id', 'Joker3e')
+    formData.append('user_id', USER_ID)
     formData.append('file', selectedFile.value)
     const response = await axios.post(`${API_BASE_URL}/upload`, formData)
     ElMessage.success(response.data.message)
@@ -71,7 +80,7 @@ const uploadFile = async () => {
 // 获取文件列表
 const loadDocuments = async () => {
   try {
-    const response = await axios.get(`${API_BASE_URL}/documents`, { params: { user_id: 'Joker3e' } })
+    const response = await axios.get(`${API_BASE_URL}/documents`, { params: { user_id: USER_ID } })
     documents.value = response.data
   } catch (error) {
     console.error(error)
@@ -88,7 +97,7 @@ const deleteDocument = async (fileHash) => {
   }).then(async () => {
     try {
       await axios.delete(`${API_BASE_URL}/delete_document`, {
-        params: { user_id: 'Joker3e', file_hash: fileHash }
+        params: { user_id: USER_ID, file_hash: fileHash }
       })
       await loadDocuments()
       ElMessage.success('删除成功')
@@ -102,6 +111,51 @@ const deleteDocument = async (fileHash) => {
 }
 
 // 发送消息函数
+const updateMessageAt = (messageIndex, patch) => {
+  const currentMessage = messages.value[messageIndex]
+
+  if (!currentMessage) {
+    return
+  }
+
+  messages.value.splice(messageIndex, 1, {
+    ...currentMessage,
+    ...patch,
+  })
+}
+
+const loadSourcesHistory = async (assistantIndex, requestId) => {
+  const requestPayload = buildSourcesHistoryPayload(USER_ID, requestId)
+
+  if (!requestPayload) {
+    updateMessageAt(assistantIndex, {
+      sourcesError: getSourcesHistoryErrorMessage(400),
+    })
+    return
+  }
+
+  updateMessageAt(assistantIndex, {
+    sourcesLoading: true,
+    sourcesError: '',
+  })
+
+  try {
+    const response = await axios.post(`${API_BASE_URL}/sources_history`, requestPayload)
+    const sourceState = getSourcesHistoryState(response.data, requestId)
+
+    updateMessageAt(assistantIndex, {
+      ...sourceState,
+      sourcesLoading: false,
+    })
+  } catch (error) {
+    console.error('Failed to load sources history', error)
+    updateMessageAt(assistantIndex, {
+      sourcesLoading: false,
+      sourcesError: getSourcesHistoryErrorMessage(error.response?.status),
+    })
+  }
+}
+
 const sendMessage = async () => {
   // 防止空输入
   if (!question.value.trim()) {
@@ -114,21 +168,21 @@ const sendMessage = async () => {
     content: question.value,
   })
 
-  let requestData = {
-    user_id: 'Joker3e',
+  const requestData = {
+    user_id: USER_ID,
     question: question.value,
   }
   // 清空输入框
   question.value = ''
+  activeRequestCount += 1
   loading.value = true
+
+  const aiMessage = createAssistantMessage()
+  messages.value.push(aiMessage)
+  const assistantIndex = messages.value.length - 1
+
   try {
     // 调用 FastAPI 后端
-    const aiMessage = {
-      role: 'assistant',
-      content: '',
-    }
-    messages.value.push(aiMessage)
-
     const response = await fetch(`${API_BASE_URL}/chat_stream`, {
       method: 'POST',
       headers: {
@@ -136,6 +190,17 @@ const sendMessage = async () => {
       },
       body: JSON.stringify(requestData),
     })
+    const requestId = getRequestIdFromResponse(response)
+    updateMessageAt(assistantIndex, { request_id: requestId })
+
+    if (!response.ok) {
+      throw new Error(`chat_stream failed with status ${response.status}`)
+    }
+
+    if (!response.body) {
+      throw new Error('chat_stream response body is unavailable')
+    }
+
     // 获取流读取器
     const reader = response.body.getReader()
 
@@ -154,23 +219,17 @@ const sendMessage = async () => {
 
       // 解码二进制数据
       const chunk = decoder.decode(value)
+      const currentMessage = messages.value[assistantIndex]
 
       // 追加到 AI 消息
-      const lastIndex = messages.value.length - 1
-      const last = messages.value[lastIndex]
-      messages.value.splice(lastIndex, 1, {
-        ...last,
-        content: last.content + chunk,
-      })
+      if (currentMessage) {
+        updateMessageAt(assistantIndex, {
+          content: currentMessage.content + chunk,
+        })
+      }
       await scrollToBottom()
     }
-    const sourcesAndHistory = await axios.post(`${API_BASE_URL}/sources_history`, requestData)
-    const lastIndex = messages.value.length - 1
-    const last = messages.value[lastIndex]
-    messages.value.splice(lastIndex, 1, {
-      ...last,
-      sources: sourcesAndHistory.data.sources,
-    })
+    await loadSourcesHistory(assistantIndex, requestId)
     // const response = await axios.post(`${API_BASE_URL}/ask`, requestData)
 
     // 把 AI 回复加入聊天列表
@@ -185,10 +244,10 @@ const sendMessage = async () => {
       role: 'assistant',
       content: '请求失败，请检查后端服务',
     })
+  } finally {
+    activeRequestCount = Math.max(activeRequestCount - 1, 0)
+    loading.value = activeRequestCount > 0
   }
-
-  // 关闭 loading
-  loading.value = false
 }
 
 const handleFileChange = (event) => {
@@ -273,11 +332,34 @@ const startPollingDocuments = () => {
           </div>
 
           <!-- 来源 -->
+          <div v-if="msg.sourcesError" class="sources-error">
+            {{ msg.sourcesError }}
+          </div>
+
           <div v-if="msg.sources && msg.sources.length" class="sources">
-            <div v-for="(source, i) in msg.sources" :key="i" class="source-item">
-              <div>来源：{{ source.filename }}</div>
-              <div>第 {{ source.page + 1 }} 页</div>
-              <div class="source-content">{{ source.content }}</div>
+            <details v-for="(source, i) in msg.sources" :key="i" class="source-item">
+              <summary class="source-filename" title="点击展开来源详情">
+                {{ source.filename }}
+              </summary>
+              <div class="source-detail">
+                <div>第 {{ source.page + 1 }} 页</div>
+                <div class="source-content">{{ source.content }}</div>
+              </div>
+            </details>
+          </div>
+
+          <div
+            v-else-if="msg.candidate_preview && msg.candidate_preview.length"
+            class="candidate-preview"
+          >
+            <div class="candidate-preview-title">候选文档（未作为最终来源）</div>
+            <div v-for="(candidate, i) in msg.candidate_preview" :key="i" class="candidate-item">
+              <div>
+                {{ candidate.filename || candidate.file_name || candidate.document_name || candidate.title || candidate.name || '候选文档' }}
+              </div>
+              <div v-if="candidate.content || candidate.preview" class="source-content">
+                {{ candidate.content || candidate.preview }}
+              </div>
             </div>
           </div>
         </div>
@@ -484,6 +566,13 @@ const startPollingDocuments = () => {
   margin-top: 10px;
 }
 
+.sources-error {
+  margin-top: 10px;
+  color: #b42318;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .source-item {
   background: #f3f3f3;
   padding: 10px;
@@ -492,10 +581,63 @@ const startPollingDocuments = () => {
   font-size: 14px;
 }
 
+.source-filename {
+  cursor: pointer;
+  color: #1677ff;
+  font-weight: 600;
+  list-style: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.source-filename::-webkit-details-marker {
+  display: none;
+}
+
+.source-filename::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  color: #667085;
+  text-decoration: none;
+}
+
+.source-item[open] > .source-filename::before {
+  content: '▾';
+}
+
+.source-filename:hover {
+  color: #0958d9;
+}
+
+.source-detail {
+  margin-top: 8px;
+}
+
 .source-content {
   margin-top: 5px;
   color: #666;
   line-height: 1.5;
+}
+
+.candidate-preview {
+  margin-top: 10px;
+}
+
+.candidate-preview-title {
+  color: #475467;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.candidate-item {
+  margin-top: 8px;
+  border: 1px dashed #d0d5dd;
+  border-radius: 8px;
+  background: #fcfcfd;
+  padding: 10px;
+  color: #344054;
+  font-size: 14px;
 }
 
 /* 输入区域 */
