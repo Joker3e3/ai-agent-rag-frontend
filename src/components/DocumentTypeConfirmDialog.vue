@@ -131,17 +131,9 @@ const handleClosed = () => {
             type="primary"
             :loading="submitting"
             :disabled="loading || submitting"
-            @click="emit('submit', 'confirm_resume_as_extracted')"
+            @click="emit('submit', 'confirm_resume')"
           >
-            简历信息无误
-          </el-button>
-          <el-button
-            type="warning"
-            :loading="submitting"
-            :disabled="loading || submitting"
-            @click="emit('submit', 'confirm_resume_with_corrections')"
-          >
-            简历信息有误
+            简历信息确认
           </el-button>
           <el-button
             type="danger"

@@ -55,6 +55,43 @@ test('normalizes the candidate draft used by the confirmation form', () => {
   })
 })
 
+test('uses the extracted decision when the user leaves the draft unchanged', () => {
+  const resolveResumeConfirmationDecision = getHelper('resolveResumeConfirmationDecision')
+
+  assert.deepStrictEqual(resolveResumeConfirmationDecision({
+    candidate_name: '<CANDIDATE_NAME>',
+    phone: '<PHONE>',
+    school: null,
+  }, {
+    candidate_name: ' <CANDIDATE_NAME> ',
+    phone: '<PHONE>',
+    school: '',
+  }), {
+    decision: 'confirm_resume_as_extracted',
+  })
+})
+
+test('uses corrections when the user changes a draft field', () => {
+  const resolveResumeConfirmationDecision = getHelper('resolveResumeConfirmationDecision')
+
+  assert.deepStrictEqual(resolveResumeConfirmationDecision({
+    candidate_name: '<CANDIDATE_NAME>',
+    phone: '<PHONE>',
+    school: null,
+  }, {
+    candidate_name: '<CANDIDATE_NAME>',
+    phone: '<PHONE>',
+    school: '<UNIVERSITY>',
+  }), {
+    decision: 'confirm_resume_with_corrections',
+    candidate: {
+      candidate_name: '<CANDIDATE_NAME>',
+      phone: '<PHONE>',
+      school: '<UNIVERSITY>',
+    },
+  })
+})
+
 test('builds the extracted resume decision payload', () => {
   const createTypeDecisionPayload = getHelper('createTypeDecisionPayload')
 

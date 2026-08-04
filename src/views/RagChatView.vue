@@ -22,6 +22,7 @@ import {
   getValidationFieldErrors,
   normalizeCandidateDraft,
   normalizeDocumentsResponse,
+  resolveResumeConfirmationDecision,
 } from '../services/documentTypes'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
@@ -51,6 +52,7 @@ const typeReviewFieldErrors = ref({})
 const typeReviewDocument = ref(null)
 const typeReviewReady = ref(false)
 const candidateDraft = ref(normalizeCandidateDraft())
+const initialCandidateDraft = ref(normalizeCandidateDraft())
 
 const fileInput = ref(null)
 
@@ -158,6 +160,7 @@ const resetTypeReviewState = () => {
   typeReviewDocument.value = null
   typeReviewReady.value = false
   candidateDraft.value = normalizeCandidateDraft()
+  initialCandidateDraft.value = normalizeCandidateDraft()
 }
 
 const loadTypeReview = async (documentId) => {
@@ -186,7 +189,9 @@ const loadTypeReview = async (documentId) => {
 
     typeReviewDocument.value = { ...typeReviewDocument.value, ...review }
     typeReviewReady.value = true
-    candidateDraft.value = normalizeCandidateDraft(review.candidate_draft)
+    const normalizedDraft = normalizeCandidateDraft(review.candidate_draft)
+    candidateDraft.value = normalizedDraft
+    initialCandidateDraft.value = { ...normalizedDraft }
   } catch (error) {
     console.error(error)
     typeReviewReady.value = false
@@ -205,6 +210,7 @@ const openTypeReview = async (document) => {
   typeReviewError.value = ''
   typeReviewFieldErrors.value = {}
   candidateDraft.value = normalizeCandidateDraft()
+  initialCandidateDraft.value = normalizeCandidateDraft()
   await loadTypeReview(document.document_id)
 }
 
@@ -224,13 +230,16 @@ const submitTypeDecision = async (decision) => {
   typeReviewFieldErrors.value = {}
 
   try {
+    const decisionRequest = decision === 'confirm_resume'
+      ? resolveResumeConfirmationDecision(initialCandidateDraft.value, candidateDraft.value)
+      : { decision }
+
     await executeTypeDecision({
       post: axios.post,
       apiBaseUrl: API_BASE_URL,
       userId: USER_ID,
       documentId: typeReviewDocument.value.document_id,
-      decision,
-      candidate: candidateDraft.value,
+      ...decisionRequest,
       refreshDocuments: loadDocuments,
       notifyStateChanged: notifyDocumentStateChanged,
     })

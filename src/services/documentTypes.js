@@ -22,6 +22,21 @@ export const normalizeCandidateDraft = (draft) => ({
   school: String(draft?.school || '').trim(),
 })
 
+export const resolveResumeConfirmationDecision = (initialDraft, currentDraft) => {
+  const initial = normalizeCandidateDraft(initialDraft)
+  const current = normalizeCandidateDraft(currentDraft)
+  const isUnchanged = Object.keys(initial).every(field => initial[field] === current[field])
+
+  if (isUnchanged) {
+    return { decision: 'confirm_resume_as_extracted' }
+  }
+
+  return {
+    decision: 'confirm_resume_with_corrections',
+    candidate: current,
+  }
+}
+
 export const createTypeDecisionPayload = (decision, draft) => {
   if (decision === 'confirm_resume_with_corrections') {
     return {
