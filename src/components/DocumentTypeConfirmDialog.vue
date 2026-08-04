@@ -30,6 +30,14 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  manualResumeConversion: {
+    type: Boolean,
+    default: false,
+  },
+  selectedDocumentType: {
+    type: String,
+    default: '',
+  },
   candidateDraft: {
     type: Object,
     default: () => ({
@@ -43,12 +51,21 @@ const props = defineProps({
 const emit = defineEmits([
   'update:modelValue',
   'update:candidateDraft',
+  'update:selectedDocumentType',
   'submit',
   'retry',
   'closed',
 ])
 
 const isResumeSuggestion = computed(() => props.suggestedDocumentType === 'resume')
+const isResumeFlow = computed(() => (
+  props.manualResumeConversion
+    ? props.selectedDocumentType === 'resume'
+    : isResumeSuggestion.value
+))
+const dialogTitle = computed(() => (
+  props.manualResumeConversion ? '更改文件类型' : '待确认'
+))
 
 const handleModelValueUpdate = (value) => {
   if (props.submitting && !value) return
@@ -74,7 +91,7 @@ const handleClosed = () => {
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="待确认"
+    :title="dialogTitle"
     width="520px"
     :close-on-click-modal="false"
     :show-close="!submitting"
@@ -90,12 +107,34 @@ const handleClosed = () => {
         <el-button link type="primary" :disabled="submitting" @click="emit('retry')">重试</el-button>
       </div>
 
-      <p v-if="isResumeSuggestion" class="document-type-confirm-dialog__message">
-        后端检测到当前文件为“简历”类型，请确认是否有误？
+      <el-form
+        v-if="ready && manualResumeConversion"
+        label-position="top"
+        class="document-type-confirm-dialog__type-form"
+      >
+        <el-form-item label="文件类型">
+          <el-select
+            :model-value="selectedDocumentType"
+            :disabled="submitting"
+            placeholder="请选择文件类型"
+            @update:model-value="emit('update:selectedDocumentType', $event)"
+          >
+            <el-option label="简历" value="resume" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+
+      <p v-if="isResumeFlow" class="document-type-confirm-dialog__message">
+        <template v-if="manualResumeConversion">
+          请填写简历信息，确认后将当前文件转换为简历。
+        </template>
+        <template v-else>
+          后端检测到当前文件为“简历”类型，请确认是否有误？
+        </template>
       </p>
 
       <el-form
-        v-if="ready && isResumeSuggestion"
+        v-if="ready && isResumeFlow"
         :model="candidateDraft"
         label-position="top"
         class="document-type-confirm-dialog__form"
@@ -126,16 +165,17 @@ const handleClosed = () => {
 
     <template #footer>
       <div class="document-type-confirm-dialog__actions">
-        <el-button-group v-if="ready && isResumeSuggestion">
+        <el-button-group v-if="ready && isResumeFlow">
           <el-button
             type="primary"
             :loading="submitting"
             :disabled="loading || submitting"
             @click="emit('submit', 'confirm_resume')"
           >
-            简历信息确认
+            {{ manualResumeConversion ? '确认' : '简历信息确认' }}
           </el-button>
           <el-button
+            v-if="!manualResumeConversion"
             type="danger"
             :loading="submitting"
             :disabled="loading || submitting"
@@ -164,6 +204,10 @@ const handleClosed = () => {
 
 .document-type-confirm-dialog__loading {
   color: #606266;
+}
+
+.document-type-confirm-dialog__type-form .el-select {
+  width: 100%;
 }
 
 .document-type-confirm-dialog__actions {

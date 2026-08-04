@@ -15,13 +15,17 @@ import {
 } from '../services/ragSources'
 import {
   canShowResumeConfirmation,
+  canShowResumeConversion,
   canUseResumeTypeReview,
   executeDocumentDelete,
   executeTypeDecision,
   getDocumentWorkflowErrorMessage,
+  getLocalizedDocumentMessage,
+  getDocumentStatusLabel,
   getValidationFieldErrors,
   normalizeCandidateDraft,
   normalizeDocumentsResponse,
+  resolveManualResumeConversionDecision,
   resolveResumeConfirmationDecision,
 } from '../services/documentTypes'
 
@@ -51,6 +55,8 @@ const typeReviewError = ref('')
 const typeReviewFieldErrors = ref({})
 const typeReviewDocument = ref(null)
 const typeReviewReady = ref(false)
+const typeReviewMode = ref('confirmation')
+const selectedDocumentType = ref('')
 const candidateDraft = ref(normalizeCandidateDraft())
 const initialCandidateDraft = ref(normalizeCandidateDraft())
 
@@ -94,11 +100,11 @@ const uploadFile = async () => {
     formData.append('user_id', USER_ID)
     formData.append('file', selectedFile.value)
     const response = await axios.post(`${API_BASE_URL}/upload`, formData)
-    ElMessage.success(response.data?.message || '文档已接收，正在处理中')
+    ElMessage.success(getLocalizedDocumentMessage(response.data?.message, '文件上传成功，正在处理中'))
     selectedFile.value = null
   } catch (error) {
     console.error(error)
-    const errMsg = error.response?.data?.detail || '上传失败'
+    const errMsg = getLocalizedDocumentMessage(error.response?.data?.detail, '文件上传失败，请稍后重试')
     ElMessage.error(errMsg)
   }
   uploading.value = false
@@ -118,7 +124,10 @@ const loadDocuments = async () => {
     documents.value = normalizeDocumentsResponse(response.data)
   } catch (error) {
     console.error(error)
-    documentsError.value = error.response?.data?.detail || error.message || '文档列表加载失败，请点击重试。'
+    documentsError.value = getLocalizedDocumentMessage(
+      error.response?.data?.detail || error.message,
+      '文档列表加载失败，请点击重试。',
+    )
   } finally {
     documentsLoading.value = false
   }
@@ -159,6 +168,8 @@ const resetTypeReviewState = () => {
   typeReviewFieldErrors.value = {}
   typeReviewDocument.value = null
   typeReviewReady.value = false
+  typeReviewMode.value = 'confirmation'
+  selectedDocumentType.value = ''
   candidateDraft.value = normalizeCandidateDraft()
   initialCandidateDraft.value = normalizeCandidateDraft()
 }
@@ -180,7 +191,7 @@ const loadTypeReview = async (documentId) => {
     )
     const review = response.data
 
-    if (!canUseResumeTypeReview(review)) {
+    if (!canUseResumeTypeReview(review, typeReviewMode.value)) {
       typeReviewDocument.value = { ...typeReviewDocument.value, ...review }
       typeReviewReady.value = false
       typeReviewError.value = '该文档当前无需进行简历类型确认，请刷新文档列表。'
@@ -201,14 +212,19 @@ const loadTypeReview = async (documentId) => {
   }
 }
 
-const openTypeReview = async (document) => {
-  if (!canShowResumeConfirmation(document)) return
+const openTypeReview = async (document, mode = 'confirmation') => {
+  const canOpen = mode === 'conversion'
+    ? canShowResumeConversion(document)
+    : canShowResumeConfirmation(document)
+  if (!canOpen) return
 
   typeReviewDocument.value = document
+  typeReviewMode.value = mode
   typeReviewReady.value = false
   typeReviewVisible.value = true
   typeReviewError.value = ''
   typeReviewFieldErrors.value = {}
+  selectedDocumentType.value = ''
   candidateDraft.value = normalizeCandidateDraft()
   initialCandidateDraft.value = normalizeCandidateDraft()
   await loadTypeReview(document.document_id)
@@ -222,7 +238,8 @@ const submitTypeDecision = async (decision) => {
   if (
     typeReviewSubmitting.value ||
     !typeReviewReady.value ||
-    !canUseResumeTypeReview(typeReviewDocument.value)
+    (typeReviewMode.value === 'conversion' && selectedDocumentType.value !== 'resume') ||
+    !canUseResumeTypeReview(typeReviewDocument.value, typeReviewMode.value)
   ) return
 
   typeReviewSubmitting.value = true
@@ -230,9 +247,11 @@ const submitTypeDecision = async (decision) => {
   typeReviewFieldErrors.value = {}
 
   try {
-    const decisionRequest = decision === 'confirm_resume'
-      ? resolveResumeConfirmationDecision(initialCandidateDraft.value, candidateDraft.value)
-      : { decision }
+    const decisionRequest = typeReviewMode.value === 'conversion'
+      ? resolveManualResumeConversionDecision(candidateDraft.value)
+      : decision === 'confirm_resume'
+        ? resolveResumeConfirmationDecision(initialCandidateDraft.value, candidateDraft.value)
+        : { decision }
 
     await executeTypeDecision({
       post: axios.post,
@@ -244,7 +263,7 @@ const submitTypeDecision = async (decision) => {
       notifyStateChanged: notifyDocumentStateChanged,
     })
     typeReviewVisible.value = false
-    ElMessage.success('简历类型确认成功')
+    ElMessage.success('修改成功')
   } catch (error) {
     console.error(error)
     typeReviewError.value = getDocumentWorkflowErrorMessage(error.response?.status)
@@ -429,11 +448,22 @@ const startPollingDocuments = () => {
 
       <!-- 上传区域 -->
       <div class="upload-box">
-        <input ref="fileInput" type="file" @change="handleFileChange" />
-
-        <button @click="uploadFile" :disabled="uploading">
-          {{ uploading ? '上传中...' : '上传文件' }}
-        </button>
+        <div class="upload-controls">
+          <input ref="fileInput" type="file" @change="handleFileChange" />
+          <el-button
+            class="upload-icon-button"
+            type="primary"
+            :loading="uploading"
+            :disabled="uploading"
+            title="上传文件"
+            aria-label="上传文件"
+            @click="uploadFile"
+          >
+            <svg class="document-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v12m0-12 4 4m-4-4-4 4M5 21h14" />
+            </svg>
+          </el-button>
+        </div>
       </div>
 
       <!-- 文件列表 -->
@@ -445,27 +475,25 @@ const startPollingDocuments = () => {
       <div class="document-list">
         <div v-for="doc in documents" :key="doc.document_id || doc.file_hash" class="document-item">
           <div class="document-left">
-            <div class="document-name">{{ doc.filename }}</div>
+            <div class="document-name" :title="doc.filename" tabindex="0">{{ doc.filename }}</div>
             <div class="document-status">
               <el-tag v-if="doc.status === 'processing'" type="warning" effect="light">
                 处理中
               </el-tag>
-              <el-tag
-                v-else-if="doc.status === 'ready' && doc.suggested_document_type === 'resume' && doc.requires_confirmation"
-                type="warning"
-                effect="light"
-              >
+              <el-tag v-else-if="doc.status === 'failed'" type="danger" effect="light">
+                处理失败
+              </el-tag>
+              <el-tag v-else-if="doc.requires_confirmation === true" type="warning" effect="light">
                 待确认
               </el-tag>
-              <el-tag v-else-if="doc.status === 'ready'" type="success" effect="light">
-                已完成
-              </el-tag>
-              <el-tag v-else-if="doc.status === 'failed'" type="danger" effect="light">
-                失败
+              <el-tag v-else :type="doc.document_type === 'resume' ? 'success' : 'info'" effect="light">
+                {{ getDocumentStatusLabel(doc) }}
               </el-tag>
             </div>
           </div>
-          <div v-if="doc.error" class="document-error">{{ doc.error }}</div>
+          <div v-if="doc.error" class="document-error">
+            {{ getLocalizedDocumentMessage(doc.error, '文档处理失败，请稍后重试') }}
+          </div>
           <div class="document-actions">
             <el-button
               v-if="canShowResumeConfirmation(doc)"
@@ -475,8 +503,29 @@ const startPollingDocuments = () => {
             >
               确认类型
             </el-button>
-            <el-button type="danger" @click="deleteDocument(doc.document_id)">
-              删除
+            <el-button
+              v-else-if="canShowResumeConversion(doc)"
+              class="document-icon-button document-icon-button--edit"
+              type="primary"
+              :disabled="typeReviewSubmitting || (typeReviewLoading && typeReviewDocument?.document_id === doc.document_id)"
+              title="更改类型"
+              aria-label="更改类型"
+              @click="openTypeReview(doc, 'conversion')"
+            >
+              <svg class="document-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m4 16-.8 4.8L8 20l11.5-11.5-4-4L4 16Zm9.5-10.5 4 4M6 20l-2 .3.3-2" />
+              </svg>
+            </el-button>
+            <el-button
+              class="document-icon-button document-icon-button--delete"
+              type="danger"
+              title="删除"
+              aria-label="删除"
+              @click="deleteDocument(doc.document_id)"
+            >
+              <svg class="document-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 7h14m-9 0V4h4v3m-6 4v6m4-6v6M7 7l1 13h8l1-13" />
+              </svg>
             </el-button>
           </div>
         </div>
@@ -488,12 +537,15 @@ const startPollingDocuments = () => {
       v-model="typeReviewVisible"
       :loading="typeReviewLoading"
       :submitting="typeReviewSubmitting"
-      :ready="typeReviewReady && canUseResumeTypeReview(typeReviewDocument)"
+      :ready="typeReviewReady && canUseResumeTypeReview(typeReviewDocument, typeReviewMode)"
       :error="typeReviewError"
       :field-errors="typeReviewFieldErrors"
       :suggested-document-type="typeReviewDocument?.suggested_document_type"
+      :manual-resume-conversion="typeReviewMode === 'conversion'"
+      :selected-document-type="selectedDocumentType"
       :candidate-draft="candidateDraft"
       @update:candidate-draft="candidateDraft = $event"
+      @update:selected-document-type="selectedDocumentType = $event"
       @retry="retryTypeReview"
       @submit="submitTypeDecision"
       @closed="resetTypeReviewState"
@@ -565,11 +617,14 @@ const startPollingDocuments = () => {
   display: flex;
   gap: 20px;
   height: calc(90vh - 56px);
+  min-width: 0;
 }
 
 /* 左侧知识库 */
 .document-panel {
-  width: 300px;
+  flex: 0 1 360px;
+  width: 360px;
+  min-width: 0;
   background: white;
   border-radius: 16px;
   padding: 20px;
@@ -588,28 +643,50 @@ const startPollingDocuments = () => {
 
 /* 上传区域 */
 .upload-box {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
   margin-bottom: 20px;
 }
 
-.upload-box input {
+.upload-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.upload-controls input {
+  flex: 1;
+  min-width: 0;
   width: 100%;
+}
+
+.upload-icon-button {
+  flex: 0 0 40px;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  padding: 0;
 }
 
 /* 文件列表 */
 .document-list {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding-right: 4px;
 }
 
 .document-item {
-  display: flex;
+  display: grid;
+  grid-template-areas:
+    "content actions"
+    "error error";
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
+  min-height: 112px;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: #f7f8fa;
   border: 1px solid #ebeef5;
   border-radius: 12px;
@@ -624,23 +701,31 @@ const startPollingDocuments = () => {
 }
 
 .document-left {
-  flex: 1;
+  grid-area: content;
   min-width: 0;
+  max-width: 100%;
 }
 
 .document-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
   font-size: 14px;
   font-weight: 500;
   color: #303133;
   margin-bottom: 6px;
 }
 
+.document-name:focus {
+  outline: 2px solid #409eff;
+  outline-offset: 2px;
+}
+
 .document-status {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .document-status .el-tag {
@@ -671,24 +756,93 @@ const startPollingDocuments = () => {
   cursor: pointer;
 }
 
-.document-item {
-  flex-wrap: wrap;
-}
-
 .document-error {
-  flex-basis: 100%;
+  grid-area: error;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .document-actions {
+  grid-area: actions;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 8px;
-  margin-left: auto;
+  gap: 4px;
+  min-width: 0;
 }
 
 .document-actions .el-button {
+  min-width: 88px;
   white-space: nowrap;
+}
+
+.document-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.document-actions .document-icon-button {
+  flex: 0 0 36px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.document-actions .document-icon-button--edit {
+  background: #1677ff;
+  border-color: #1677ff;
+  color: #fff;
+}
+
+.document-actions .document-icon-button--delete {
+  background: #f04438;
+  border-color: #f04438;
+  color: #fff;
+}
+
+.document-action-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+@media (max-width: 900px) {
+  .main-layout {
+    flex-direction: column;
+    height: auto;
+  }
+
+  .document-panel {
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 440px;
+  }
+
+  .document-list {
+    max-height: 300px;
+  }
+
+  .document-item {
+    grid-template-areas:
+      "content"
+      "actions"
+      "error";
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 132px;
+  }
+
+  .document-actions {
+    justify-content: flex-start;
+  }
+
+  .chat-wrapper {
+    min-height: 420px;
+  }
 }
 
 /* 聊天区域 */

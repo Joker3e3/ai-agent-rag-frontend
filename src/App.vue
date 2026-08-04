@@ -21,7 +21,7 @@ body {
 }
 
 .container {
-  width: 1400px;
+  width: min(1400px, calc(100% - 40px));
   margin: 20px auto;
 }
 

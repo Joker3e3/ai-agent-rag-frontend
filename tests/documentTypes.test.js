@@ -41,6 +41,47 @@ test('shows resume confirmation only for ready pending suggestions', () => {
   }), true)
 })
 
+test('shows a manual conversion action for ready generic documents', () => {
+  const canShowResumeConversion = getHelper('canShowResumeConversion')
+  const canUseResumeTypeReview = getHelper('canUseResumeTypeReview')
+
+  assert.equal(canShowResumeConversion({
+    status: 'ready',
+    document_type: 'document',
+    requires_confirmation: false,
+  }), true)
+  assert.equal(canUseResumeTypeReview({
+    document_type: 'document',
+    requires_confirmation: false,
+  }, 'conversion'), true)
+  assert.equal(canUseResumeTypeReview({
+    document_type: 'document',
+    requires_confirmation: false,
+  }), false)
+})
+
+test('prioritizes processing, failed, and confirmation labels over document type', () => {
+  const getDocumentStatusLabel = getHelper('getDocumentStatusLabel')
+
+  assert.equal(getDocumentStatusLabel({ status: 'processing', document_type: 'resume' }), '处理中')
+  assert.equal(getDocumentStatusLabel({ status: 'failed', document_type: 'resume' }), '处理失败')
+  assert.equal(getDocumentStatusLabel({
+    status: 'ready',
+    document_type: 'resume',
+    requires_confirmation: true,
+  }), '待确认')
+  assert.equal(getDocumentStatusLabel({
+    status: 'ready',
+    document_type: 'document',
+    requires_confirmation: false,
+  }), '文件')
+  assert.equal(getDocumentStatusLabel({
+    status: 'ready',
+    document_type: 'resume',
+    requires_confirmation: false,
+  }), '简历')
+})
+
 test('normalizes the candidate draft used by the confirmation form', () => {
   const normalizeCandidateDraft = getHelper('normalizeCandidateDraft')
 
@@ -88,6 +129,23 @@ test('uses corrections when the user changes a draft field', () => {
       candidate_name: '<CANDIDATE_NAME>',
       phone: '<PHONE>',
       school: '<UNIVERSITY>',
+    },
+  })
+})
+
+test('manual generic-document conversion always submits required corrections', () => {
+  const resolveManualResumeConversionDecision = getHelper('resolveManualResumeConversionDecision')
+
+  assert.deepStrictEqual(resolveManualResumeConversionDecision({
+    candidate_name: 'Test Candidate',
+    phone: '13900000010',
+    school: 'Example University',
+  }), {
+    decision: 'confirm_resume_with_corrections',
+    candidate: {
+      candidate_name: 'Test Candidate',
+      phone: '13900000010',
+      school: 'Example University',
     },
   })
 })
@@ -140,6 +198,19 @@ test('maps document confirmation errors and field validation errors', () => {
     phone: '手机号校验失败',
     school: '学校校验失败',
   })
+})
+
+test('falls back to Chinese for English document operation messages', () => {
+  const getLocalizedDocumentMessage = getHelper('getLocalizedDocumentMessage')
+
+  assert.equal(
+    getLocalizedDocumentMessage('upload accepted', '文件上传成功，正在处理中'),
+    '文件上传成功，正在处理中',
+  )
+  assert.equal(
+    getLocalizedDocumentMessage('上传成功', '文件上传成功，正在处理中'),
+    '上传成功',
+  )
 })
 
 test('refreshes documents after a successful type decision', async () => {
