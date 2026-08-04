@@ -5,6 +5,7 @@ import { onMounted } from 'vue'
 
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import DocumentTypeConfirmDialog from '../components/DocumentTypeConfirmDialog.vue'
 import {
   buildSourcesHistoryPayload,
   createAssistantMessage,
@@ -12,6 +13,16 @@ import {
   getSourcesHistoryErrorMessage,
   getSourcesHistoryState,
 } from '../services/ragSources'
+import {
+  canShowResumeConfirmation,
+  canUseResumeTypeReview,
+  executeDocumentDelete,
+  executeTypeDecision,
+  getDocumentWorkflowErrorMessage,
+  getValidationFieldErrors,
+  normalizeCandidateDraft,
+  normalizeDocumentsResponse,
+} from '../services/documentTypes'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 const USER_ID = 'Joker3e'
@@ -29,6 +40,17 @@ const messages = ref([])
 
 // 知识库文件
 const documents = ref([])
+const documentsError = ref('')
+const documentsLoading = ref(false)
+
+const typeReviewVisible = ref(false)
+const typeReviewLoading = ref(false)
+const typeReviewSubmitting = ref(false)
+const typeReviewError = ref('')
+const typeReviewFieldErrors = ref({})
+const typeReviewDocument = ref(null)
+const typeReviewReady = ref(false)
+const candidateDraft = ref(normalizeCandidateDraft())
 
 const fileInput = ref(null)
 
@@ -41,6 +63,14 @@ const selectedFile = ref(null)
 
 // 上传状态
 const uploading = ref(false)
+
+const notifyDocumentStateChanged = () => {
+  if (typeof window === 'undefined') return
+
+  window.dispatchEvent(new CustomEvent('rag-documents-updated', {
+    detail: { userId: USER_ID },
+  }))
+}
 
 // 滚动函数
 const scrollToBottom = async () => {
@@ -62,7 +92,7 @@ const uploadFile = async () => {
     formData.append('user_id', USER_ID)
     formData.append('file', selectedFile.value)
     const response = await axios.post(`${API_BASE_URL}/upload`, formData)
-    ElMessage.success(response.data.message)
+    ElMessage.success(response.data?.message || '文档已接收，正在处理中')
     selectedFile.value = null
   } catch (error) {
     console.error(error)
@@ -79,16 +109,21 @@ const uploadFile = async () => {
 
 // 获取文件列表
 const loadDocuments = async () => {
+  documentsLoading.value = true
+  documentsError.value = ''
   try {
     const response = await axios.get(`${API_BASE_URL}/documents`, { params: { user_id: USER_ID } })
-    documents.value = response.data
+    documents.value = normalizeDocumentsResponse(response.data)
   } catch (error) {
     console.error(error)
+    documentsError.value = error.response?.data?.detail || error.message || '文档列表加载失败，请点击重试。'
+  } finally {
+    documentsLoading.value = false
   }
 }
 
 // 删除文件
-const deleteDocument = async (fileHash) => {
+const deleteDocument = async (documentId) => {
   ElMessageBox.confirm('确定要删除这个文件吗？', '提示', {
     type: 'warning',
     confirmButtonText: '确认',
@@ -96,10 +131,14 @@ const deleteDocument = async (fileHash) => {
     closeOnClickModal: false,
   }).then(async () => {
     try {
-      await axios.delete(`${API_BASE_URL}/delete_document`, {
-        params: { user_id: USER_ID, file_hash: fileHash }
+      await executeDocumentDelete({
+        remove: axios.delete,
+        apiBaseUrl: API_BASE_URL,
+        userId: USER_ID,
+        documentId,
+        refreshDocuments: loadDocuments,
+        notifyStateChanged: notifyDocumentStateChanged,
       })
-      await loadDocuments()
       ElMessage.success('删除成功')
     } catch (error) {
       console.error(error)
@@ -111,6 +150,103 @@ const deleteDocument = async (fileHash) => {
 }
 
 // 发送消息函数
+const resetTypeReviewState = () => {
+  typeReviewLoading.value = false
+  typeReviewSubmitting.value = false
+  typeReviewError.value = ''
+  typeReviewFieldErrors.value = {}
+  typeReviewDocument.value = null
+  typeReviewReady.value = false
+  candidateDraft.value = normalizeCandidateDraft()
+}
+
+const loadTypeReview = async (documentId) => {
+  if (!documentId) {
+    typeReviewError.value = '当前文档缺少标识，暂时无法确认简历类型'
+    return
+  }
+
+  typeReviewLoading.value = true
+  typeReviewError.value = ''
+  typeReviewFieldErrors.value = {}
+
+  try {
+    const response = await axios.get(
+      `${API_BASE_URL}/documents/${encodeURIComponent(documentId)}/type-review`,
+      { params: { user_id: USER_ID } },
+    )
+    const review = response.data
+
+    if (!canUseResumeTypeReview(review)) {
+      typeReviewDocument.value = { ...typeReviewDocument.value, ...review }
+      typeReviewReady.value = false
+      typeReviewError.value = '该文档当前无需进行简历类型确认，请刷新文档列表。'
+      return
+    }
+
+    typeReviewDocument.value = { ...typeReviewDocument.value, ...review }
+    typeReviewReady.value = true
+    candidateDraft.value = normalizeCandidateDraft(review.candidate_draft)
+  } catch (error) {
+    console.error(error)
+    typeReviewReady.value = false
+    typeReviewError.value = getDocumentWorkflowErrorMessage(error.response?.status)
+  } finally {
+    typeReviewLoading.value = false
+  }
+}
+
+const openTypeReview = async (document) => {
+  if (!canShowResumeConfirmation(document)) return
+
+  typeReviewDocument.value = document
+  typeReviewReady.value = false
+  typeReviewVisible.value = true
+  typeReviewError.value = ''
+  typeReviewFieldErrors.value = {}
+  candidateDraft.value = normalizeCandidateDraft()
+  await loadTypeReview(document.document_id)
+}
+
+const retryTypeReview = () => {
+  loadTypeReview(typeReviewDocument.value?.document_id)
+}
+
+const submitTypeDecision = async (decision) => {
+  if (
+    typeReviewSubmitting.value ||
+    !typeReviewReady.value ||
+    !canUseResumeTypeReview(typeReviewDocument.value)
+  ) return
+
+  typeReviewSubmitting.value = true
+  typeReviewError.value = ''
+  typeReviewFieldErrors.value = {}
+
+  try {
+    await executeTypeDecision({
+      post: axios.post,
+      apiBaseUrl: API_BASE_URL,
+      userId: USER_ID,
+      documentId: typeReviewDocument.value.document_id,
+      decision,
+      candidate: candidateDraft.value,
+      refreshDocuments: loadDocuments,
+      notifyStateChanged: notifyDocumentStateChanged,
+    })
+    typeReviewVisible.value = false
+    ElMessage.success('简历类型确认成功')
+  } catch (error) {
+    console.error(error)
+    typeReviewError.value = getDocumentWorkflowErrorMessage(error.response?.status)
+    if (error.response?.status === 422) {
+      typeReviewFieldErrors.value = getValidationFieldErrors(error.response?.data?.detail)
+    }
+  } finally {
+    typeReviewSubmitting.value = false
+  }
+}
+
 const updateMessageAt = (messageIndex, patch) => {
   const currentMessage = messages.value[messageIndex]
 
@@ -292,30 +428,68 @@ const startPollingDocuments = () => {
       </div>
 
       <!-- 文件列表 -->
+      <div v-if="documentsError" class="documents-error">
+        {{ documentsError }}
+        <el-button link type="primary" size="small" @click="loadDocuments">重试</el-button>
+      </div>
+      <div v-if="documentsLoading" class="documents-loading">正在加载文档列表...</div>
       <div class="document-list">
-        <div v-for="doc in documents" :key="doc.file_hash" class="document-item">
+        <div v-for="doc in documents" :key="doc.document_id || doc.file_hash" class="document-item">
           <div class="document-left">
             <div class="document-name">{{ doc.filename }}</div>
             <div class="document-status">
-              <span v-if="doc.status === 'processing'" class="status processing">
+              <el-tag v-if="doc.status === 'processing'" type="warning" effect="light">
                 处理中
-              </span>
-              <span v-else-if="doc.status === 'ready'" class="status ready">
+              </el-tag>
+              <el-tag
+                v-else-if="doc.status === 'ready' && doc.suggested_document_type === 'resume' && doc.requires_confirmation"
+                type="warning"
+                effect="light"
+              >
+                待确认
+              </el-tag>
+              <el-tag v-else-if="doc.status === 'ready'" type="success" effect="light">
                 已完成
-              </span>
-              <span v-else-if="doc.status === 'failed'" class="status failed">
+              </el-tag>
+              <el-tag v-else-if="doc.status === 'failed'" type="danger" effect="light">
                 失败
-              </span>
+              </el-tag>
             </div>
           </div>
-          <button class="delete-btn" @click="deleteDocument(doc.file_hash)">
-            删除
-          </button>
+          <div v-if="doc.error" class="document-error">{{ doc.error }}</div>
+          <div class="document-actions">
+            <el-button
+              v-if="canShowResumeConfirmation(doc)"
+              type="primary"
+              :disabled="typeReviewSubmitting || (typeReviewLoading && typeReviewDocument?.document_id === doc.document_id)"
+              @click="openTypeReview(doc)"
+            >
+              确认类型
+            </el-button>
+            <el-button type="danger" @click="deleteDocument(doc.document_id)">
+              删除
+            </el-button>
+          </div>
         </div>
       </div>
     </div>
 
     <!-- 聊天区域 -->
+    <DocumentTypeConfirmDialog
+      v-model="typeReviewVisible"
+      :loading="typeReviewLoading"
+      :submitting="typeReviewSubmitting"
+      :ready="typeReviewReady && canUseResumeTypeReview(typeReviewDocument)"
+      :error="typeReviewError"
+      :field-errors="typeReviewFieldErrors"
+      :suggested-document-type="typeReviewDocument?.suggested_document_type"
+      :candidate-draft="candidateDraft"
+      @update:candidate-draft="candidateDraft = $event"
+      @retry="retryTypeReview"
+      @submit="submitTypeDecision"
+      @closed="resetTypeReviewState"
+    />
+
     <div class="chat-wrapper">
       <!-- 聊天框 -->
       <div ref="chatBox" class="chat-box">
@@ -460,51 +634,52 @@ const startPollingDocuments = () => {
   align-items: center;
 }
 
-.status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
+.document-status .el-tag {
+  white-space: nowrap;
 }
 
-.status.processing {
-  background: #fff7e6;
-  color: #d48806;
-}
-
-.status.ready {
-  background: #f6ffed;
-  color: #389e0d;
-}
-
-.status.failed {
-  background: #fff1f0;
+.documents-error,
+.document-error {
   color: #cf1322;
+  font-size: 12px;
 }
 
-.delete-btn {
-  width: 64px;
-  height: 34px;
-  background: #ff4d4f;
-  color: white;
+.documents-error {
+  margin: 0 0 12px;
+}
+
+.documents-loading {
+  margin: 0 0 12px;
+  color: #909399;
+  font-size: 12px;
+}
+
+.documents-error button {
+  margin-left: 6px;
   border: none;
-  border-radius: 8px;
-  font-size: 13px;
+  background: transparent;
+  color: #409eff;
   cursor: pointer;
-  flex-shrink: 0;
-  transition: all 0.2s;
 }
 
-.delete-btn:hover {
-  background: #ff7875;
+.document-item {
+  flex-wrap: wrap;
 }
 
-.delete-btn:active {
-  transform: scale(0.96);
+.document-error {
+  flex-basis: 100%;
+}
+
+.document-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.document-actions .el-button {
+  white-space: nowrap;
 }
 
 /* 聊天区域 */

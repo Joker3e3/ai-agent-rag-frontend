@@ -1013,12 +1013,21 @@ const toggleTrace = async () => {
   }
 }
 
+const handleDocumentsUpdated = (event) => {
+  const updatedUserId = event?.detail?.userId
+  if (updatedUserId && updatedUserId !== userId.value) return
+
+  loadCandidates()
+}
+
 onMounted(() => {
   loadCandidates()
+  window.addEventListener('rag-documents-updated', handleDocumentsUpdated)
 })
 
 onUnmounted(() => {
   stopPolling()
+  window.removeEventListener('rag-documents-updated', handleDocumentsUpdated)
 })
 </script>
 
