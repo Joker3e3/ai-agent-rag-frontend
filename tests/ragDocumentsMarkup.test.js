@@ -105,6 +105,7 @@ test('document action icons are compact and visually distinct', () => {
 
 test('document operation feedback is presented in Chinese', () => {
   assert.match(ragChatMarkup, /getLocalizedDocumentMessage/)
+  assert.match(ragChatMarkup, /getDocumentUploadErrorMessage/)
   assert.match(ragChatMarkup, /getLocalizedDocumentMessage\(response\.data\?\.message/)
   assert.match(ragChatMarkup, /文件上传成功，正在处理中/)
   assert.match(ragChatMarkup, /修改成功/)

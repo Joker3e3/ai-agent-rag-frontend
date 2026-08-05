@@ -6,11 +6,12 @@ import { onMounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import DocumentTypeConfirmDialog from '../components/DocumentTypeConfirmDialog.vue'
+import RagSourcesPanel from '../components/RagSourcesPanel.vue'
 import {
   buildSourcesHistoryPayload,
   createAssistantMessage,
+  createSourcesHistoryErrorState,
   getRequestIdFromResponse,
-  getSourcesHistoryErrorMessage,
   getSourcesHistoryState,
 } from '../services/ragSources'
 import {
@@ -19,7 +20,9 @@ import {
   canUseResumeTypeReview,
   executeDocumentDelete,
   executeTypeDecision,
+  getDocumentUploadErrorMessage,
   getDocumentWorkflowErrorMessage,
+  getCandidateDraftMissingFields,
   getLocalizedDocumentMessage,
   getDocumentStatusLabel,
   getValidationFieldErrors,
@@ -59,6 +62,11 @@ const typeReviewMode = ref('confirmation')
 const selectedDocumentType = ref('')
 const candidateDraft = ref(normalizeCandidateDraft())
 const initialCandidateDraft = ref(normalizeCandidateDraft())
+const candidateFieldLabels = {
+  candidate_name: '候选人姓名',
+  phone: '手机号',
+  school: '学校',
+}
 
 const fileInput = ref(null)
 
@@ -104,7 +112,7 @@ const uploadFile = async () => {
     selectedFile.value = null
   } catch (error) {
     console.error(error)
-    const errMsg = getLocalizedDocumentMessage(error.response?.data?.detail, '文件上传失败，请稍后重试')
+    const errMsg = getDocumentUploadErrorMessage(error.response?.data?.detail)
     ElMessage.error(errMsg)
   }
   uploading.value = false
@@ -242,17 +250,28 @@ const submitTypeDecision = async (decision) => {
     !canUseResumeTypeReview(typeReviewDocument.value, typeReviewMode.value)
   ) return
 
+  const decisionRequest = typeReviewMode.value === 'conversion'
+    ? resolveManualResumeConversionDecision(candidateDraft.value)
+    : decision === 'confirm_resume'
+      ? resolveResumeConfirmationDecision(initialCandidateDraft.value, candidateDraft.value)
+      : { decision }
+
+  if (decisionRequest.decision === 'confirm_resume_with_corrections') {
+    const missingFields = getCandidateDraftMissingFields(decisionRequest.candidate)
+    if (missingFields.length > 0) {
+      typeReviewError.value = '请完整填写候选人姓名、手机号和学校后再提交'
+      typeReviewFieldErrors.value = Object.fromEntries(
+        missingFields.map(field => [field, `${candidateFieldLabels[field]}为必填项`]),
+      )
+      return
+    }
+  }
+
   typeReviewSubmitting.value = true
   typeReviewError.value = ''
   typeReviewFieldErrors.value = {}
 
   try {
-    const decisionRequest = typeReviewMode.value === 'conversion'
-      ? resolveManualResumeConversionDecision(candidateDraft.value)
-      : decision === 'confirm_resume'
-        ? resolveResumeConfirmationDecision(initialCandidateDraft.value, candidateDraft.value)
-        : { decision }
-
     await executeTypeDecision({
       post: axios.post,
       apiBaseUrl: API_BASE_URL,
@@ -293,7 +312,8 @@ const loadSourcesHistory = async (assistantIndex, requestId) => {
 
   if (!requestPayload) {
     updateMessageAt(assistantIndex, {
-      sourcesError: getSourcesHistoryErrorMessage(400),
+      ...createSourcesHistoryErrorState(400),
+      sourcesLoading: false,
     })
     return
   }
@@ -301,6 +321,13 @@ const loadSourcesHistory = async (assistantIndex, requestId) => {
   updateMessageAt(assistantIndex, {
     sourcesLoading: true,
     sourcesError: '',
+    context_request_id: '',
+    evidence_status: null,
+    sources: [],
+    source_groups: [],
+    summary_sources: [],
+    candidate_preview: [],
+    trace: {},
   })
 
   try {
@@ -314,8 +341,8 @@ const loadSourcesHistory = async (assistantIndex, requestId) => {
   } catch (error) {
     console.error('Failed to load sources history', error)
     updateMessageAt(assistantIndex, {
+      ...createSourcesHistoryErrorState(error.response?.status),
       sourcesLoading: false,
-      sourcesError: getSourcesHistoryErrorMessage(error.response?.status),
     })
   }
 }
@@ -566,37 +593,7 @@ const startPollingDocuments = () => {
             <div class="ai-message">{{ msg.content }}</div>
           </div>
 
-          <!-- 来源 -->
-          <div v-if="msg.sourcesError" class="sources-error">
-            {{ msg.sourcesError }}
-          </div>
-
-          <div v-if="msg.sources && msg.sources.length" class="sources">
-            <details v-for="(source, i) in msg.sources" :key="i" class="source-item">
-              <summary class="source-filename" title="点击展开来源详情">
-                {{ source.filename }}
-              </summary>
-              <div class="source-detail">
-                <div>第 {{ source.page + 1 }} 页</div>
-                <div class="source-content">{{ source.content }}</div>
-              </div>
-            </details>
-          </div>
-
-          <div
-            v-else-if="msg.candidate_preview && msg.candidate_preview.length"
-            class="candidate-preview"
-          >
-            <div class="candidate-preview-title">候选文档（未作为最终来源）</div>
-            <div v-for="(candidate, i) in msg.candidate_preview" :key="i" class="candidate-item">
-              <div>
-                {{ candidate.filename || candidate.file_name || candidate.document_name || candidate.title || candidate.name || '候选文档' }}
-              </div>
-              <div v-if="candidate.content || candidate.preview" class="source-content">
-                {{ candidate.content || candidate.preview }}
-              </div>
-            </div>
-          </div>
+          <RagSourcesPanel v-if="msg.role === 'assistant'" :message="msg" />
         </div>
       </div>
 
@@ -897,85 +894,6 @@ const startPollingDocuments = () => {
   border-radius: 16px;
   line-height: 1.6;
   white-space: pre-wrap;
-}
-
-/* 来源 */
-.sources {
-  margin-top: 10px;
-}
-
-.sources-error {
-  margin-top: 10px;
-  color: #b42318;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.source-item {
-  background: #f3f3f3;
-  padding: 10px;
-  border-radius: 8px;
-  margin-top: 10px;
-  font-size: 14px;
-}
-
-.source-filename {
-  cursor: pointer;
-  color: #1677ff;
-  font-weight: 600;
-  list-style: none;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-.source-filename::-webkit-details-marker {
-  display: none;
-}
-
-.source-filename::before {
-  content: '▸';
-  display: inline-block;
-  margin-right: 6px;
-  color: #667085;
-  text-decoration: none;
-}
-
-.source-item[open] > .source-filename::before {
-  content: '▾';
-}
-
-.source-filename:hover {
-  color: #0958d9;
-}
-
-.source-detail {
-  margin-top: 8px;
-}
-
-.source-content {
-  margin-top: 5px;
-  color: #666;
-  line-height: 1.5;
-}
-
-.candidate-preview {
-  margin-top: 10px;
-}
-
-.candidate-preview-title {
-  color: #475467;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.candidate-item {
-  margin-top: 8px;
-  border: 1px dashed #d0d5dd;
-  border-radius: 8px;
-  background: #fcfcfd;
-  padding: 10px;
-  color: #344054;
-  font-size: 14px;
 }
 
 /* 输入区域 */

@@ -96,19 +96,39 @@ test('normalizes the candidate draft used by the confirmation form', () => {
   })
 })
 
-test('uses the extracted decision when the user leaves the draft unchanged', () => {
+test('identifies missing required candidate fields before submitting corrections', () => {
+  const getCandidateDraftMissingFields = getHelper('getCandidateDraftMissingFields')
+
+  assert.deepStrictEqual(getCandidateDraftMissingFields({
+    candidate_name: '<CANDIDATE_NAME>',
+    phone: ' ',
+    school: null,
+  }), ['phone', 'school'])
+  assert.deepStrictEqual(getCandidateDraftMissingFields({
+    candidate_name: '<CANDIDATE_NAME>',
+    phone: '<PHONE>',
+    school: '<UNIVERSITY>',
+  }), [])
+})
+
+test('submits candidate corrections when the user confirms unchanged draft information', () => {
   const resolveResumeConfirmationDecision = getHelper('resolveResumeConfirmationDecision')
 
   assert.deepStrictEqual(resolveResumeConfirmationDecision({
     candidate_name: '<CANDIDATE_NAME>',
     phone: '<PHONE>',
-    school: null,
+    school: '<UNIVERSITY>',
   }, {
     candidate_name: ' <CANDIDATE_NAME> ',
     phone: '<PHONE>',
-    school: '',
+    school: ' <UNIVERSITY> ',
   }), {
-    decision: 'confirm_resume_as_extracted',
+    decision: 'confirm_resume_with_corrections',
+    candidate: {
+      candidate_name: '<CANDIDATE_NAME>',
+      phone: '<PHONE>',
+      school: '<UNIVERSITY>',
+    },
   })
 })
 
@@ -210,6 +230,27 @@ test('falls back to Chinese for English document operation messages', () => {
   assert.equal(
     getLocalizedDocumentMessage('上传成功', '文件上传成功，正在处理中'),
     '上传成功',
+  )
+})
+
+test('maps duplicate upload responses to a dedicated message', () => {
+  const getDocumentUploadErrorMessage = getHelper('getDocumentUploadErrorMessage')
+
+  assert.equal(
+    getDocumentUploadErrorMessage({
+      code: 'DOCUMENT_ALREADY_EXISTS',
+      message: 'document already exists',
+      existing_document_id: '<DOCUMENT_UUID>',
+    }),
+    '该文档已存在，无需重复上传',
+  )
+  assert.equal(
+    getDocumentUploadErrorMessage('document already exists'),
+    '文件上传失败，请稍后重试',
+  )
+  assert.equal(
+    getDocumentUploadErrorMessage({ code: 'OTHER_ERROR', message: 'upload failed' }),
+    '文件上传失败，请稍后重试',
   )
 })
 

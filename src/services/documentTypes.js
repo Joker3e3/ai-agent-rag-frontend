@@ -10,6 +10,20 @@ export const getLocalizedDocumentMessage = (message, fallback) => {
   return text
 }
 
+export const getDocumentUploadErrorMessage = (
+  detail,
+  fallback = '文件上传失败，请稍后重试',
+) => {
+  const detailCode = detail && typeof detail === 'object' ? detail.code : ''
+  const detailMessage = detail && typeof detail === 'object' ? detail.message : detail
+
+  if (detailCode === 'DOCUMENT_ALREADY_EXISTS') {
+    return '该文档已存在，无需重复上传'
+  }
+
+  return getLocalizedDocumentMessage(detailMessage, fallback)
+}
+
 export const canShowResumeConfirmation = (document) => (
   document?.status === 'ready' &&
   document?.suggested_document_type === 'resume' &&
@@ -54,18 +68,18 @@ export const normalizeCandidateDraft = (draft) => ({
   school: String(draft?.school || '').trim(),
 })
 
-export const resolveResumeConfirmationDecision = (initialDraft, currentDraft) => {
-  const initial = normalizeCandidateDraft(initialDraft)
-  const current = normalizeCandidateDraft(currentDraft)
-  const isUnchanged = Object.keys(initial).every(field => initial[field] === current[field])
+export const getCandidateDraftMissingFields = (draft) => {
+  const normalizedDraft = normalizeCandidateDraft(draft)
+  return ['candidate_name', 'phone', 'school']
+    .filter(field => !normalizedDraft[field])
+}
 
-  if (isUnchanged) {
-    return { decision: 'confirm_resume_as_extracted' }
-  }
+export const resolveResumeConfirmationDecision = (draftOrInitial, currentDraft) => {
+  const candidateDraft = currentDraft === undefined ? draftOrInitial : currentDraft
 
   return {
     decision: 'confirm_resume_with_corrections',
-    candidate: current,
+    candidate: normalizeCandidateDraft(candidateDraft),
   }
 }
 
