@@ -32,3 +32,25 @@ test('source panel does not use the old flat source card loop', () => {
   assert.doesNotMatch(viewMarkup, /v-for="\(source, i\) in msg\.sources"/)
   assert.doesNotMatch(panelMarkup, /filename \+ page/)
 })
+
+test('handles reset command before request id and source history loading', () => {
+  assert.match(viewMarkup, /getRagCommandFromResponse\(response\)/)
+  assert.match(viewMarkup, /parseResetResponse\(response\)/)
+
+  const resetStart = viewMarkup.indexOf("if (ragCommand === 'reset')")
+  const requestIdStart = viewMarkup.indexOf('const requestId = getRequestIdFromResponse')
+  assert.ok(resetStart >= 0)
+  assert.ok(requestIdStart > resetStart)
+
+  const resetBlock = viewMarkup.slice(resetStart, requestIdStart)
+  assert.doesNotMatch(resetBlock, /getRequestIdFromResponse/)
+  assert.doesNotMatch(resetBlock, /loadSourcesHistory/)
+  assert.match(resetBlock, /messages\.value = \[createResetConfirmationMessage\(\)\]/)
+
+  assert.match(viewMarkup, /await loadSourcesHistory\(assistantIndex, requestId, requestGeneration\)/)
+
+  const sourceHistoryStart = viewMarkup.indexOf('const loadSourcesHistory')
+  const sourceHistoryEnd = viewMarkup.indexOf('const sendMessage')
+  const sourceHistoryBlock = viewMarkup.slice(sourceHistoryStart, sourceHistoryEnd)
+  assert.match(sourceHistoryBlock, /requestGeneration !== conversationGeneration/)
+})

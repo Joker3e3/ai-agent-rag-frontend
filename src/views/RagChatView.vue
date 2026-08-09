@@ -31,6 +31,11 @@ import {
   resolveManualResumeConversionDecision,
   resolveResumeConfirmationDecision,
 } from '../services/documentTypes'
+import {
+  createResetConfirmationMessage,
+  getRagCommandFromResponse,
+  parseResetResponse,
+} from '../services/ragChatCommands'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 const USER_ID = 'Joker3e'
@@ -39,6 +44,7 @@ onMounted(() => { loadDocuments() })
 
 let pollingTimer = null
 let activeRequestCount = 0
+let conversationGeneration = 0
 
 // 用户输入框内容
 const question = ref('')
@@ -307,7 +313,15 @@ const updateMessageAt = (messageIndex, patch) => {
   })
 }
 
-const loadSourcesHistory = async (assistantIndex, requestId) => {
+const loadSourcesHistory = async (
+  assistantIndex,
+  requestId,
+  requestGeneration = conversationGeneration,
+) => {
+  if (requestGeneration !== conversationGeneration) {
+    return
+  }
+
   const requestPayload = buildSourcesHistoryPayload(USER_ID, requestId)
 
   if (!requestPayload) {
@@ -332,6 +346,11 @@ const loadSourcesHistory = async (assistantIndex, requestId) => {
 
   try {
     const response = await axios.post(`${API_BASE_URL}/sources_history`, requestPayload)
+
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
     const sourceState = getSourcesHistoryState(response.data, requestId)
 
     updateMessageAt(assistantIndex, {
@@ -371,6 +390,7 @@ const sendMessage = async () => {
   const aiMessage = createAssistantMessage()
   messages.value.push(aiMessage)
   const assistantIndex = messages.value.length - 1
+  const requestGeneration = conversationGeneration
 
   try {
     // 调用 FastAPI 后端
@@ -381,6 +401,27 @@ const sendMessage = async () => {
       },
       body: JSON.stringify(requestData),
     })
+
+    const ragCommand = getRagCommandFromResponse(response)
+    if (ragCommand === 'reset') {
+      try {
+        await parseResetResponse(response)
+        conversationGeneration += 1
+        messages.value = [createResetConfirmationMessage()]
+      } catch (resetError) {
+        console.error(resetError)
+        messages.value.push({
+          role: 'assistant',
+          content: '请求失败，请检查后端服务',
+        })
+      }
+      return
+    }
+
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
     const requestId = getRequestIdFromResponse(response)
     updateMessageAt(assistantIndex, { request_id: requestId })
 
@@ -403,6 +444,10 @@ const sendMessage = async () => {
       // 读取流数据
       const { done, value } = await reader.read()
 
+      if (requestGeneration !== conversationGeneration) {
+        break
+      }
+
       // done=true 表示结束
       if (done) {
         break
@@ -420,7 +465,11 @@ const sendMessage = async () => {
       }
       await scrollToBottom()
     }
-    await loadSourcesHistory(assistantIndex, requestId)
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
+    await loadSourcesHistory(assistantIndex, requestId, requestGeneration)
     // const response = await axios.post(`${API_BASE_URL}/ask`, requestData)
 
     // 把 AI 回复加入聊天列表
