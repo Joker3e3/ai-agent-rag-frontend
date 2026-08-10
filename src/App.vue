@@ -3,6 +3,7 @@
     <nav class="top-nav">
       <RouterLink class="nav-link" to="/rag-chat">RAG Chat</RouterLink>
       <RouterLink class="nav-link" to="/career-agent">Career Agent</RouterLink>
+      <RouterLink class="nav-link" to="/topic-admin">主题治理</RouterLink>
     </nav>
 
     <RouterView />

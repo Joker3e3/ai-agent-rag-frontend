@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import RagChatView from '../views/RagChatView.vue'
 import CareerAgent from '../views/CareerAgent.vue'
+import TopicAdminView from '../views/TopicAdminView.vue'
 
 const routes = [
   {
@@ -16,6 +17,11 @@ const routes = [
     path: '/career-agent',
     name: 'career-agent',
     component: CareerAgent,
+  },
+  {
+    path: '/topic-admin',
+    name: 'topic-admin',
+    component: TopicAdminView,
   },
 ]
 

@@ -4,6 +4,7 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
 import TracePanel from '../components/TracePanel.vue'
+import { formatDateTime } from '../utils/dateTime'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL
 const AGENT_BASE_URL = import.meta.env.VITE_AGENT_BASE_URL
@@ -122,22 +123,7 @@ const firstTraceArray = (data, keys) => {
 }
 
 const formatHistoryDate = (value) => {
-  if (!value) {
-    return ''
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTime(value)
 }
 
 const maskPhone = (phone) => {
@@ -159,23 +145,7 @@ const formatCandidateOption = (candidate) => {
 }
 
 const formatResumeDate = (value) => {
-  if (!value) {
-    return '上传时间未知'
-  }
-
-  const date = new Date(value)
-
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  return formatDateTime(value, '上传时间未知')
 }
 
 const formatResumeOption = (resume) => {
@@ -279,8 +249,8 @@ const isCancelableStatus = (status) => {
 const shouldShowCancelAnalysis = computed(() => {
   return Boolean(
     workflowId.value &&
-      isCancelableStatus(workflowStatus.value) &&
-      (!isHistoryMode.value || isSelectedCurrentWorkflow.value),
+    isCancelableStatus(workflowStatus.value) &&
+    (!isHistoryMode.value || isSelectedCurrentWorkflow.value),
   )
 })
 
@@ -650,12 +620,12 @@ const resolveHistorySubject = async (run = {}) => {
     candidates.value = historyCandidate
       ? candidateItems
       : [
-          {
-            candidate_id: candidateId,
-            display_label: `候选人信息未找到，candidate_id: ${candidateId}`,
-          },
-          ...candidateItems,
-        ]
+        {
+          candidate_id: candidateId,
+          display_label: `候选人信息未找到，candidate_id: ${candidateId}`,
+        },
+        ...candidateItems,
+      ]
     selectedCandidateId.value = candidateId
 
     if (!historyCandidate) {
@@ -692,13 +662,13 @@ const resolveHistorySubject = async (run = {}) => {
     resumes.value = historyResume
       ? resumeItems
       : [
-          {
-            resume_id: resumeId,
-            candidate_id: candidateId,
-            display_label: `简历版本未找到，resume_id: ${resumeId}`,
-          },
-          ...resumeItems,
-        ]
+        {
+          resume_id: resumeId,
+          candidate_id: candidateId,
+          display_label: `简历版本未找到，resume_id: ${resumeId}`,
+        },
+        ...resumeItems,
+      ]
     selectedResumeId.value = resumeId
 
     if (!historyResume) {
@@ -1087,13 +1057,8 @@ onUnmounted(() => {
             <template v-else>
               <div v-if="candidateError && !candidates.length" class="selector-error">{{ candidateError }}</div>
               <div v-else-if="!candidates.length" class="selector-hint">暂无候选人，请先上传符合命名规范的简历。</div>
-              <select
-                v-else
-                v-model="selectedCandidateId"
-                class="select-control"
-                :disabled="isHistoryMode || loading"
-                @change="selectCandidate"
-              >
+              <select v-else v-model="selectedCandidateId" class="select-control" :disabled="isHistoryMode || loading"
+                @change="selectCandidate">
                 <option value="" disabled>请选择候选人</option>
                 <option v-for="candidate in candidates" :key="candidate.candidate_id" :value="candidate.candidate_id">
                   {{ formatCandidateOption(candidate) }}
@@ -1108,12 +1073,7 @@ onUnmounted(() => {
             <div v-if="loadingResumes" class="selector-hint">正在加载简历版本...</div>
             <template v-else>
               <div v-if="resumeError && !resumes.length" class="selector-error">{{ resumeError }}</div>
-              <select
-                v-else
-                v-model="selectedResumeId"
-                class="select-control"
-                :disabled="isHistoryMode || loading"
-              >
+              <select v-else v-model="selectedResumeId" class="select-control" :disabled="isHistoryMode || loading">
                 <option value="" disabled>请选择简历版本</option>
                 <option v-for="resume in resumes" :key="resume.resume_id" :value="resume.resume_id">
                   {{ formatResumeOption(resume) }}
@@ -1138,16 +1098,13 @@ onUnmounted(() => {
         </div>
 
         <div class="career-actions">
-          <button
-            v-if="shouldShowCancelAnalysis"
-            class="career-cancel"
-            :disabled="canceling || isCancellingStatus(workflowStatus)"
-            @click="cancelWorkflow"
-          >
+          <button v-if="shouldShowCancelAnalysis" class="career-cancel"
+            :disabled="canceling || isCancellingStatus(workflowStatus)" @click="cancelWorkflow">
             {{ canceling || isCancellingStatus(workflowStatus) ? '中止中...' : '中止分析' }}
           </button>
           <button class="career-submit" :disabled="isSubmitDisabled" @click="analyzeCareer">
-            {{ isCancellingStatus(workflowStatus) ? '中止中...' : isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析' }}
+            {{ isCancellingStatus(workflowStatus) ? '中止中...' : isHistoryMode ? '历史记录查看中' : loading ? '分析中...' : '开始分析'
+            }}
           </button>
         </div>
 
@@ -1527,7 +1484,7 @@ onUnmounted(() => {
   cursor: not-allowed;
 }
 
-.career-field > input,
+.career-field>input,
 .career-field textarea {
   width: 100%;
   border: 1px solid #d0d5dd;
@@ -1539,7 +1496,7 @@ onUnmounted(() => {
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.career-field > input {
+.career-field>input {
   height: 40px;
   padding: 0 12px;
 }
@@ -1551,7 +1508,7 @@ onUnmounted(() => {
   font-family: Arial, sans-serif;
 }
 
-.career-field > input:focus,
+.career-field>input:focus,
 .career-field textarea:focus {
   border-color: #1677ff;
   box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
