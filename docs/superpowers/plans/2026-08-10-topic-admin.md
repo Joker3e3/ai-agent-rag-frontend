@@ -21,6 +21,8 @@ Taxonomy version activation/rollback, document topic proposal generation, permis
 - `TopicRelationsPanel.vue` queries the backend active version, discovers proposed relations, and separately reviews proposed relations.
 - `TopicRollupPanel.vue` executes parent Rollup, stores the backend `run_id`, queries history, and only allows Popconfirm rollback for succeeded rows.
 - `TopicTopicsPanel.vue` separates audit history from active topics. Active rows remain keyed by `topic_id`; approved relations are joined by `canonical_topic_id` and shown as direct parent/child summaries in a Drawer, without hierarchy inference.
+- Candidate rows expose only approve, reject, and merge. Active rows own the deprecate action and refresh both the active list and audit history after success.
+- Backend integration confirms the existing topic review endpoint accepts `deprecate` for `active + approved` topics.
 
 ## Integrated administrator interfaces
 

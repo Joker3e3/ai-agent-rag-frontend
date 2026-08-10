@@ -103,7 +103,7 @@ src/services/topicTaxonomyAdmin.js
 
 ```json
 {
-  "decision": "approve|reject|merge|deprecate",
+  "decision": "approve|reject|merge",
   "target_topic_code": null,
   "note": null
 }
@@ -112,12 +112,29 @@ src/services/topicTaxonomyAdmin.js
 - `note` 最长 1000 字符；
 - `target_topic_code` 先 trim，最长 128 字符；
 - `merge` 必须填写已有规范主题的 `topic_code`，不是主题名称；
-- `deprecate` 可选填写替代主题的 `topic_code`；
-- 非适用场景发送 `target_topic_code: null`；
+- 非 merge 场景发送 `target_topic_code: null`；
 - merge 提交前二次确认；
 - 请求期间禁用候选主题审核按钮；
 - 成功后刷新候选主题列表；
 - approve 成功后显示“关系发现处理中，请刷新父子关系列表确认”，不假定关系已生成。
+
+### 已激活主题废弃
+
+已激活主题列表单独提供“废弃”操作，候选主题列表不提供该操作。废弃调用同一主题审核接口：
+
+```json
+{
+  "decision": "deprecate",
+  "target_topic_code": null,
+  "note": null
+}
+```
+
+- `target_topic_code` 可选，表示替代主题的规范 `topic_code`；
+- 后端已确认该主题审核接口支持对 `active + approved` 主题执行 `deprecate`；
+- 提交前二次确认，请求期间禁用相关按钮；
+- 成功后刷新已激活主题列表，并刷新已加载的审核历史；
+- 前端不自行把主题状态改为 `deprecated`，以接口响应为准。
 
 ## 6. 父子关系审核
 
@@ -245,7 +262,8 @@ src/services/topicTaxonomyAdmin.js
 11. 重复点击不会发送重复请求；
 12. proposed 不进入正式主题统计；
 13. 页面刷新不保留过期操作状态；
-14. 现有聊天、来源展示和 Career Agent 标记测试继续通过。
+14. 候选主题不展示废弃操作，已激活主题废弃请求体正确且成功后刷新列表；
+15. 现有聊天、来源展示和 Career Agent 标记测试继续通过。
 
 ## 11. 后端依赖与限制
 
@@ -262,6 +280,7 @@ GET /admin/topic-taxonomy/rollups
 - Rollup 历史适配后端的 `{ items, total, limit, offset }` 响应，并按 `status=succeeded` 控制回滚入口。
 - 已激活主题与审核历史使用后端新增读取接口；已激活列表仅展示 `active + approved` 主题。
 - 已激活主题追加 `父子关系` 列，使用 Drawer 展示直接父主题和直接子主题；不递归推导层级。
+- 候选主题仅提供批准、拒绝、合并；已激活主题提供废弃并支持可选替代主题 `topic_code`。
 - 页面可见的 `aliases`、批次字段、时间字段和 active 状态说明统一使用中文；时间统一显示为 `YYYY-MM-DD HH:mm:ss`。
 - 当前候选主题状态映射仍有一项前端一致性优化待单独处理：将显示映射严格收敛到后端真实主题/审核状态枚举。
 - 最终验证：`npm test` 76/76 通过，针对性 ESLint 通过，`npm run build` 通过，`git diff --check` 通过。

@@ -39,11 +39,10 @@ const decisionOptions = [
   { label: '批准', value: 'approve' },
   { label: '拒绝', value: 'reject' },
   { label: '合并', value: 'merge' },
-  { label: '废弃', value: 'deprecate' },
 ]
 
 const topicStatusLabels = Object.freeze({
-  proposed: '待提案确认',
+  proposed: '候选主题',
   pending: '待审核',
   active: '已激活',
   rejected: '已拒绝',
@@ -60,11 +59,7 @@ const reviewStatusLabels = Object.freeze({
 
 const targetCodeRequired = computed(() => reviewDecision.value === 'merge')
 
-const targetCodeHint = computed(() => (
-  targetCodeRequired.value
-    ? '请输入已有规范主题的 topic_code，不是主题名称'
-    : '可选填写替代主题的 topic_code'
-))
+const targetCodeHint = '请输入已有规范主题的 topic_code，不是主题名称'
 
 const normalizeText = (value) => String(value ?? '').trim()
 
@@ -288,14 +283,6 @@ watch(() => props.active, (active) => {
               >
                 合并
               </el-button>
-              <el-button
-                size="small"
-                type="info"
-                :disabled="topicReviewSubmitting"
-                @click="openReviewDialog(row, 'deprecate')"
-              >
-                废弃
-              </el-button>
             </template>
           </div>
         </template>
@@ -325,7 +312,7 @@ watch(() => props.active, (active) => {
           </el-select>
         </el-form-item>
         <el-form-item
-          v-if="['merge', 'deprecate'].includes(reviewDecision)"
+          v-if="reviewDecision === 'merge'"
           label="目标规范 topic_code"
           :required="targetCodeRequired"
         >

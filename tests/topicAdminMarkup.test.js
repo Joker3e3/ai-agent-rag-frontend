@@ -46,15 +46,26 @@ test('candidate topic panel renders separate topic and review statuses', () => {
   assert.match(candidateMarkup, /proposed|pending|active|rejected|retired|deprecated/)
 })
 
-test('candidate topic panel exposes all review decisions and bounded inputs', () => {
+test('candidate topic panel exposes candidate review decisions and bounded inputs', () => {
   assert.match(candidateMarkup, /approve/)
   assert.match(candidateMarkup, /reject/)
   assert.match(candidateMarkup, /merge/)
-  assert.match(candidateMarkup, /deprecate/)
+  assert.doesNotMatch(candidateMarkup, /openReviewDialog\(row, 'deprecate'\)/)
+  assert.doesNotMatch(candidateMarkup, /value: 'deprecate'/)
   assert.match(candidateMarkup, /maxlength="1000"/)
   assert.match(candidateMarkup, /maxlength="128"/)
   assert.match(candidateMarkup, /target_topic_code/)
   assert.match(candidateMarkup, /已有规范主题.*topic_code|topic_code.*不是主题名称/s)
+})
+
+test('active topic panel owns topic deprecation separately from candidate review', () => {
+  assert.match(topicListMarkup, /openDeprecateDialog/)
+  assert.match(topicListMarkup, /submitActiveTopicDeprecation/)
+  assert.match(topicListMarkup, /activeTopicSubmitting/)
+  assert.match(topicListMarkup, /decision: 'deprecate'/)
+  assert.match(topicListMarkup, /@click="openDeprecateDialog\(row\)"[\s\S]*>\s*废弃\s*<\/el-button>/)
+  assert.match(topicListMarkup, /替代主题.*topic_code/)
+  assert.match(topicListMarkup, /loadActiveTopics.*loadHistory|loadHistory.*loadActiveTopics/s)
 })
 
 test('candidate topic actions stay on one horizontal row', () => {
@@ -66,6 +77,7 @@ test('candidate topic actions stay on one horizontal row', () => {
 test('topic admin panels localize visible English labels and status descriptions', () => {
   assert.match(candidateMarkup, /label="别名"/)
   assert.match(candidateMarkup, /label="主题状态"/)
+  assert.match(candidateMarkup, /proposed: '候选主题'/)
   assert.match(topicListMarkup, /label="别名"/)
   assert.match(rollupMarkup, /label="状态"/)
   assert.match(rollupMarkup, /label="受影响文档数"/)
@@ -159,6 +171,12 @@ test('topic list panel renders history and active topic lists separately', () =>
   assert.match(topicListMarkup, /status/)
   assert.match(topicListMarkup, /review_status/)
   assert.match(topicListMarkup, /last_review/)
+  assert.match(topicListMarkup, /reviewDecisionLabels/)
+  assert.match(topicListMarkup, /approve: '批准'/)
+  assert.match(topicListMarkup, /reject: '拒绝'/)
+  assert.match(topicListMarkup, /merge: '合并'/)
+  assert.match(topicListMarkup, /deprecate: '废弃'/)
+  assert.match(topicListMarkup, /formatReviewDecision\(normalizeText\(review\.decision\)\)/)
   assert.match(topicListMarkup, /listTopicHistory/)
   assert.match(topicListMarkup, /listActiveTopics/)
   assert.match(topicListMarkup, /historyPage\.value = page/)

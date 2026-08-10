@@ -1,7 +1,9 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
+  buildTopicReviewPayload,
   getTopicAdminErrorMessage,
   normalizeActiveTopicsResponse,
   normalizeRelationsResponse,
@@ -43,6 +45,10 @@ const activeRelationsVersion = ref('')
 const activeRelationVersionWarning = ref('')
 const selectedActiveTopic = ref(null)
 const relationDrawerVisible = ref(false)
+const activeTopicReviewDialogVisible = ref(false)
+const activeTopicSubmitting = ref(false)
+const deprecateTargetCode = ref('')
+const deprecateNote = ref('')
 
 const pageSize = 20
 
@@ -74,6 +80,13 @@ const topicReviewStatusLabels = Object.freeze({
   approved: '已批准',
   rejected: '已拒绝',
   merged: '已合并',
+})
+
+const reviewDecisionLabels = Object.freeze({
+  approve: '批准',
+  reject: '拒绝',
+  merge: '合并',
+  deprecate: '废弃',
 })
 
 const normalizeText = (value) => String(value ?? '').trim()
@@ -147,9 +160,11 @@ const relationSummaryFor = (topic) => {
   return `父：${details.parents.length} · 子：${details.children.length}`
 }
 
+const formatReviewDecision = (decision) => reviewDecisionLabels[decision] || normalizeText(decision)
+
 const lastReviewText = (review) => {
   if (!review) return '-'
-  const decision = normalizeText(review.decision)
+  const decision = formatReviewDecision(normalizeText(review.decision))
   const reviewer = normalizeText(review.reviewer_id)
   if (decision && reviewer) return `${decision} · ${reviewer}`
   return decision || reviewer || '-'
@@ -223,6 +238,77 @@ const loadActiveTopics = async ({ resetPage = false } = {}) => {
     activeError.value = getTopicAdminErrorMessage(requestError)
   } finally {
     activeLoading.value = false
+  }
+}
+
+const resetActiveTopicReviewDialog = () => {
+  selectedActiveTopic.value = null
+  deprecateTargetCode.value = ''
+  deprecateNote.value = ''
+}
+
+const openDeprecateDialog = (topic) => {
+  selectedActiveTopic.value = topic
+  deprecateTargetCode.value = ''
+  deprecateNote.value = ''
+  activeTopicReviewDialogVisible.value = true
+}
+
+const validateDeprecationForm = () => {
+  const targetCode = normalizeText(deprecateTargetCode.value)
+  const note = normalizeText(deprecateNote.value)
+
+  if (targetCode.length > 128) {
+    ElMessage.warning('替代主题 topic_code 最多 128 个字符')
+    return null
+  }
+  if (note.length > 1000) {
+    ElMessage.warning('审核备注最多 1000 个字符')
+    return null
+  }
+
+  return { targetCode, note }
+}
+
+const submitActiveTopicDeprecation = async () => {
+  if (activeTopicSubmitting.value || !selectedActiveTopic.value) return
+
+  const values = validateDeprecationForm()
+  if (!values) return
+
+  try {
+    await ElMessageBox.confirm(
+      `将主题“${selectedActiveTopic.value.topic_label || selectedActiveTopic.value.topic_code}”标记为已废弃，是否继续？`,
+      '确认废弃主题',
+      {
+        type: 'warning',
+        confirmButtonText: '确认废弃',
+        cancelButtonText: '取消',
+        closeOnClickModal: false,
+      },
+    )
+  } catch {
+    return
+  }
+
+  activeTopicSubmitting.value = true
+  try {
+    await props.api.reviewTopic(
+      selectedActiveTopic.value.topic_id,
+      buildTopicReviewPayload({
+        decision: 'deprecate',
+        targetTopicCode: values.targetCode,
+        note: values.note,
+      }),
+    )
+    ElMessage.success('主题已废弃')
+    activeTopicReviewDialogVisible.value = false
+    await loadActiveTopics({ resetPage: true })
+    if (historyLoaded.value) await loadHistory({ resetPage: true })
+  } catch (requestError) {
+    ElMessage.error(getTopicAdminErrorMessage(requestError))
+  } finally {
+    activeTopicSubmitting.value = false
   }
 }
 
@@ -360,7 +446,11 @@ watch(() => props.active, (active) => {
       <el-tab-pane label="已激活主题" name="active">
         <div class="active-toolbar">
           <p>以下列表来自后端当前激活的 taxonomy 版本，仅包含已激活且已批准的主题。</p>
-          <el-button :loading="activeLoading" :disabled="activeLoading" @click="loadActiveTopics({ resetPage: true })">
+          <el-button
+            :loading="activeLoading"
+            :disabled="activeLoading || activeTopicSubmitting"
+            @click="loadActiveTopics({ resetPage: true })"
+          >
             刷新已激活主题
           </el-button>
         </div>
@@ -375,7 +465,12 @@ watch(() => props.active, (active) => {
 
         <div v-if="activeError" class="panel-error">
           {{ activeError }}
-          <el-button link type="primary" :disabled="activeLoading" @click="loadActiveTopics()">重试</el-button>
+          <el-button
+            link
+            type="primary"
+            :disabled="activeLoading || activeTopicSubmitting"
+            @click="loadActiveTopics()"
+          >重试</el-button>
         </div>
 
         <el-table
@@ -416,6 +511,18 @@ watch(() => props.active, (active) => {
                   查看关系
                 </el-button>
               </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                type="danger"
+                size="small"
+                :disabled="activeLoading || activeTopicSubmitting"
+                @click="openDeprecateDialog(row)"
+              >
+                废弃
+              </el-button>
             </template>
           </el-table-column>
         </el-table>
@@ -482,6 +589,54 @@ watch(() => props.active, (active) => {
             </div>
           </template>
         </el-drawer>
+
+        <el-dialog
+          v-model="activeTopicReviewDialogVisible"
+          title="废弃已激活主题"
+          width="560px"
+          :close-on-click-modal="false"
+          :show-close="!activeTopicSubmitting"
+          @closed="resetActiveTopicReviewDialog"
+        >
+          <el-form label-position="top">
+            <el-form-item label="主题">
+              <el-input :model-value="selectedActiveTopic?.topic_label || ''" disabled />
+            </el-form-item>
+            <el-form-item label="替代主题 topic_code（可选）">
+              <el-input
+                v-model="deprecateTargetCode"
+                maxlength="128"
+                show-word-limit
+                :disabled="activeTopicSubmitting"
+                placeholder="请输入替代主题的规范 topic_code"
+              />
+            </el-form-item>
+            <el-form-item label="审核备注">
+              <el-input
+                v-model="deprecateNote"
+                type="textarea"
+                :rows="4"
+                maxlength="1000"
+                show-word-limit
+                :disabled="activeTopicSubmitting"
+                placeholder="可填写废弃理由，便于审计"
+              />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button :disabled="activeTopicSubmitting" @click="activeTopicReviewDialogVisible = false">
+              取消
+            </el-button>
+            <el-button
+              type="danger"
+              :loading="activeTopicSubmitting"
+              :disabled="activeTopicSubmitting"
+              @click="submitActiveTopicDeprecation"
+            >
+              确认废弃
+            </el-button>
+          </template>
+        </el-dialog>
 
         <el-pagination
           v-if="activeTotal > pageSize"
