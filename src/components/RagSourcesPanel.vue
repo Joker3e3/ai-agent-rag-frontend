@@ -43,6 +43,9 @@ const hasSourcePanelContent = computed(() => (
   props.message.sourcesLoading ||
   props.message.sourcesError ||
   props.message.evidence_status ||
+  props.message.context_request_id ||
+  (Array.isArray(props.message.sources) && props.message.sources.length > 0) ||
+  (Array.isArray(props.message.source_groups) && props.message.source_groups.length > 0) ||
   summarySources.value.length > 0 ||
   (Array.isArray(props.message.candidate_preview) && props.message.candidate_preview.length > 0)
 ))
@@ -82,6 +85,11 @@ const getCandidateFilename = (candidate) => (
       </div>
 
       <div v-else-if="message.evidence_status === 'supported' && !showFinalSources" class="sources-empty">
+        <el-tag type="info" effect="light">暂无来源</el-tag>
+        <span>当前回答暂无可展示的来源片段。</span>
+      </div>
+
+      <div v-else-if="!message.sources?.length" class="sources-empty">
         <el-tag type="info" effect="light">暂无来源</el-tag>
         <span>当前回答暂无可展示的来源片段。</span>
       </div>

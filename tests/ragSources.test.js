@@ -76,6 +76,12 @@ test('creates independent assistant source state', () => {
   assert.deepStrictEqual(first.source_groups, [])
   assert.deepStrictEqual(first.candidate_preview, [])
   assert.equal(first.context_request_id, '')
+  assert.equal(first.topic_document_matches, null)
+  assert.equal(first.topic_original_question, '')
+  assert.equal(first.topic_loading, false)
+  assert.equal(first.topic_error, '')
+  assert.equal(first.profile_mention_matches, null)
+  assert.equal(first.exact_content_matches, null)
 })
 
 test('keeps source fields and separates candidate data from final sources', () => {
@@ -125,6 +131,12 @@ test('keeps source fields and separates candidate data from final sources', () =
       evidence_status: 'supported',
       candidate_preview: candidatePreview,
       trace: { selected: 'document-1' },
+      topic_document_matches: null,
+      profile_mention_matches: null,
+      exact_content_matches: null,
+      topic_original_question: '',
+      topic_loading: false,
+      topic_error: '',
       sourcesError: '',
     },
   )
@@ -248,7 +260,327 @@ test('clears every source category when sources history fails', () => {
       summary_sources: [],
       candidate_preview: [],
       trace: {},
+      topic_document_matches: null,
+      profile_mention_matches: null,
+      exact_content_matches: null,
+      topic_original_question: '',
+      topic_loading: false,
+      topic_error: '',
+      sourcesHistoryError: '来源已过期，请重新提问',
       sourcesError: '来源已过期，请重新提问',
     },
   )
+})
+
+test('keeps the initial chat request free of topic pagination fields', () => {
+  const buildChatStreamPayload = getHelper('buildChatStreamPayload')
+
+  assert.deepStrictEqual(buildChatStreamPayload('user-a', 'topic question'), {
+    user_id: 'user-a',
+    question: 'topic question',
+  })
+})
+
+test('builds a topic pagination request with the cursor fields', () => {
+  const buildChatStreamPayload = getHelper('buildChatStreamPayload')
+
+  assert.deepStrictEqual(buildChatStreamPayload('user-a', 'topic question', {
+    topicLimit: 20,
+    topicCursor: ' cursor-a ',
+  }), {
+    user_id: 'user-a',
+    question: 'topic question',
+    topic_limit: 20,
+    topic_cursor: 'cursor-a',
+  })
+})
+
+test('does not add topic pagination fields when the cursor is empty', () => {
+  const buildChatStreamPayload = getHelper('buildChatStreamPayload')
+
+  assert.deepStrictEqual(buildChatStreamPayload('user-a', 'topic question', {
+    topicLimit: 20,
+    topicCursor: '  ',
+  }), {
+    user_id: 'user-a',
+    question: 'topic question',
+  })
+})
+
+test('treats an object topic page as topic mode but keeps null and missing legacy responses ordinary', () => {
+  const isTopicDocumentMatchesResponse = getHelper('isTopicDocumentMatchesResponse')
+
+  assert.equal(isTopicDocumentMatchesResponse({ topic_document_matches: { items: [] } }), true)
+  assert.equal(isTopicDocumentMatchesResponse({ topic_document_matches: null }), false)
+  assert.equal(isTopicDocumentMatchesResponse({ sources: [] }), false)
+})
+
+test('preserves topic, profile mention, exact content, and ordinary source fields independently', () => {
+  const getSourcesHistoryState = getHelper('getSourcesHistoryState')
+  const state = getSourcesHistoryState({
+    request_id: 'structured-1',
+    context_request_id: 'structured-1',
+    sources: [],
+    topic_document_matches: {
+      query_term: '数据库系统',
+      topic: { topic_code: 'database_systems', topic_label: '数据库系统' },
+      match_kind: 'formal',
+      items: [{ document_id: 'doc-topic', filename: 'topic.pdf', topics: [] }],
+      has_more: false,
+      next_cursor: null,
+    },
+    profile_mention_matches: {
+      query_term: '向量检索',
+      topic: { topic_code: 'vector_retrieval', topic_label: '向量检索' },
+      match_kind: 'mention',
+      items: [{ document_id: 'doc-profile', filename: 'profile.pdf', topics: [] }],
+      has_more: false,
+      next_cursor: null,
+    },
+    exact_content_matches: {
+      query_term: '精确短语',
+      items: [{
+        document_id: 'doc-exact',
+        filename: 'exact.pdf',
+        document_type: 'document',
+        evidence: [{
+          page: 3,
+          section: '摘要',
+          chunk_index: 4,
+          content_preview: '精确短语上下文',
+          content_truncated: true,
+        }],
+      }],
+      has_more: false,
+      next_cursor: null,
+    },
+  }, 'structured-1')
+
+  assert.equal(state.topic_document_matches.items[0].document_id, 'doc-topic')
+  assert.equal(state.profile_mention_matches.items[0].document_id, 'doc-profile')
+  assert.equal(state.exact_content_matches.items[0].evidence[0].content_preview, '精确短语上下文')
+  assert.deepStrictEqual(state.sources, [])
+})
+
+test('prefers exact content previews and truncates legacy content fallback to 300 characters', () => {
+  const getExactContentPreview = getHelper('getExactContentPreview')
+  const legacyContent = '甲'.repeat(301)
+
+  assert.equal(
+    getExactContentPreview({ content_preview: '后端预览', content: '旧正文' }),
+    '后端预览',
+  )
+  assert.equal(
+    getExactContentPreview({ content: legacyContent }),
+    `${'甲'.repeat(300)}...`,
+  )
+  assert.equal(getExactContentPreview({ content: '' }), '')
+})
+
+test('prefers backend exact match counts and falls back to the item array length', () => {
+  const getExactContentMatchCounts = getHelper('getExactContentMatchCounts')
+
+  assert.deepStrictEqual(
+    getExactContentMatchCounts({
+      items: [{}, {}],
+      matched_chunk_count: 7,
+      displayed_evidence_count: 5,
+      omitted_evidence_count: 2,
+    }),
+    {
+      matched_chunk_count: 7,
+      displayed_evidence_count: 5,
+      omitted_evidence_count: 2,
+    },
+  )
+  assert.deepStrictEqual(
+    getExactContentMatchCounts({ items: [{}, {}] }),
+    {
+      matched_chunk_count: 2,
+      displayed_evidence_count: 2,
+      omitted_evidence_count: 2,
+    },
+  )
+  assert.deepStrictEqual(
+    getExactContentMatchCounts({ items: [] }),
+    {
+      matched_chunk_count: 0,
+      displayed_evidence_count: 0,
+      omitted_evidence_count: 0,
+    },
+  )
+})
+
+test('keeps an ordinary empty snapshot distinct when all structured results are null', () => {
+  const getSourcesHistoryState = getHelper('getSourcesHistoryState')
+
+  const state = getSourcesHistoryState({
+    request_id: 'ordinary-empty',
+    context_request_id: 'ordinary-empty',
+    sources: [],
+    source_groups: [],
+    topic_document_matches: null,
+    profile_mention_matches: null,
+    exact_content_matches: null,
+  }, 'ordinary-empty')
+
+  assert.equal(state.topic_document_matches, null)
+  assert.equal(state.profile_mention_matches, null)
+  assert.equal(state.exact_content_matches, null)
+  assert.deepStrictEqual(state.sources, [])
+  assert.deepStrictEqual(state.source_groups, [])
+})
+
+test('deduplicates structured document pages by document_id and keeps same-name documents', () => {
+  const normalizeTopicDocumentMatches = getHelper('normalizeTopicDocumentMatches')
+  const normalizeExactContentMatches = getHelper('normalizeExactContentMatches')
+
+  const normalized = normalizeTopicDocumentMatches({
+    items: [
+      { document_id: 'doc-a', filename: 'same.pdf' },
+      { document_id: 'doc-a', filename: 'same.pdf' },
+      { document_id: 'doc-b', filename: 'same.pdf' },
+    ],
+  })
+
+  assert.deepStrictEqual(normalized.items.map(item => item.document_id), ['doc-a', 'doc-b'])
+
+  const exactNormalized = normalizeExactContentMatches({
+    items: [
+      { document_id: 'doc-a', filename: 'same.pdf', evidence: [{ page: 1 }] },
+      { document_id: 'doc-a', filename: 'same.pdf', evidence: [{ page: 2 }] },
+      { document_id: 'doc-b', filename: 'same.pdf', evidence: [{ page: 3 }] },
+    ],
+  })
+
+  assert.deepStrictEqual(exactNormalized.items.map(item => item.document_id), ['doc-a', 'doc-b'])
+  assert.deepStrictEqual(
+    exactNormalized.items[0].evidence.map(evidence => evidence.page),
+    [1, 2],
+  )
+
+  const directExact = normalizeExactContentMatches({
+    items: [{
+      document_id: 'doc-direct',
+      filename: 'direct.pdf',
+      page: 7,
+      section: '正文',
+      chunk_index: 2,
+      content_preview: 'direct match',
+      content_truncated: false,
+    }],
+  })
+
+  assert.equal(directExact.items[0].content_preview, 'direct match')
+})
+
+test('keeps an exact document with empty evidence for the panel empty state', () => {
+  const normalizeExactContentMatches = getHelper('normalizeExactContentMatches')
+
+  const normalized = normalizeExactContentMatches({
+    items: [{
+      document_id: 'doc-empty',
+      filename: 'empty.pdf',
+      evidence: [],
+    }],
+  })
+
+  assert.equal(normalized.items.length, 1)
+  assert.equal(normalized.items[0].document_id, 'doc-empty')
+  assert.deepStrictEqual(normalized.items[0].evidence, [])
+})
+
+test('normalizes current and legacy topic page field names without changing item order', () => {
+  const normalizeTopicDocumentMatches = getHelper('normalizeTopicDocumentMatches')
+
+  const normalized = normalizeTopicDocumentMatches({
+    query_term: 'database',
+    topic: { topic_code: 'db', topic_label: 'Database' },
+    items: [
+      { document_id: 'doc-a', topics: [{ topic_role: 'primary' }] },
+      { document_id: 'doc-b', matched_topics: [{ topic_role: 'secondary' }] },
+    ],
+    has_more: true,
+    next_cursor: 'cursor-a',
+  })
+
+  assert.equal(normalized.query, 'database')
+  assert.equal(normalized.query_term, 'database')
+  assert.deepStrictEqual(normalized.topic, { topic_code: 'db', topic_label: 'Database' })
+  assert.deepStrictEqual(normalized.items.map(item => item.document_id), ['doc-a', 'doc-b'])
+  assert.deepStrictEqual(normalized.items[0].matched_topics, [{ topic_role: 'primary' }])
+  assert.deepStrictEqual(normalized.items[1].matched_topics, [{ topic_role: 'secondary' }])
+  assert.equal(normalized.has_more, true)
+  assert.equal(normalized.next_cursor, 'cursor-a')
+})
+
+test('merges topic pages by document id while preserving backend order', () => {
+  const mergeTopicDocumentMatches = getHelper('mergeTopicDocumentMatches')
+
+  const merged = mergeTopicDocumentMatches(
+    {
+      query: 'db',
+      topic: null,
+      items: [
+        { document_id: 'doc-a', filename: 'same.pdf' },
+        { document_id: 'doc-b', filename: 'same.pdf' },
+      ],
+      has_more: true,
+      next_cursor: 'cursor-b',
+    },
+    {
+      query: 'db',
+      topic: null,
+      items: [
+        { document_id: 'doc-b', filename: 'same.pdf' },
+        { document_id: 'doc-c', filename: 'same.pdf' },
+      ],
+      has_more: false,
+      next_cursor: null,
+    },
+  )
+
+  assert.deepStrictEqual(merged.items.map(item => item.document_id), ['doc-a', 'doc-b', 'doc-c'])
+  assert.equal(merged.has_more, false)
+  assert.equal(merged.next_cursor, null)
+})
+
+test('keeps a topic page with no topic or items distinct from ordinary RAG state', () => {
+  const getSourcesHistoryState = getHelper('getSourcesHistoryState')
+
+  const state = getSourcesHistoryState({
+    request_id: 'rag-topic',
+    context_request_id: 'rag-topic',
+    topic_document_matches: {
+      query: 'missing topic',
+      topic: null,
+      items: [],
+      has_more: false,
+      next_cursor: null,
+    },
+  }, 'rag-topic')
+
+  assert.ok(state.topic_document_matches)
+  assert.deepStrictEqual(state.topic_document_matches.items, [])
+  assert.deepStrictEqual(state.sources, [])
+  assert.deepStrictEqual(state.source_groups, [])
+})
+
+test('allows loading more only for a non-empty cursor and a non-loading topic page', () => {
+  const canLoadMoreTopicDocuments = getHelper('canLoadMoreTopicDocuments')
+
+  assert.equal(canLoadMoreTopicDocuments({ has_more: true, next_cursor: 'cursor-a' }, false), true)
+  assert.equal(canLoadMoreTopicDocuments({ has_more: false, next_cursor: 'cursor-a' }, false), false)
+  assert.equal(canLoadMoreTopicDocuments({ has_more: true, next_cursor: '' }, false), false)
+  assert.equal(canLoadMoreTopicDocuments({ has_more: true, next_cursor: 'cursor-a' }, true), false)
+})
+
+test('marks source history HTTP failures separately from ordinary RAG state', () => {
+  const createSourcesHistoryErrorState = getHelper('createSourcesHistoryErrorState')
+
+  const errorState = createSourcesHistoryErrorState(404)
+
+  assert.equal(errorState.sourcesHistoryError, '来源暂不可用：来源快照不存在')
+  assert.equal(errorState.topic_document_matches, null)
+  assert.deepStrictEqual(errorState.sources, [])
 })

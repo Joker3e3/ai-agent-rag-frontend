@@ -1,5 +1,9 @@
 export const RAG_REQUEST_ID_HEADER = 'X-RAG-Request-ID'
 
+export const TOPIC_PAGE_LIMIT = 20
+
+const EXACT_CONTENT_PREVIEW_LIMIT = 300
+
 const SOURCE_SNAPSHOT_ERROR_MESSAGES = Object.freeze({
   400: '来源暂不可用：当前回答没有可用来源标识',
   403: '来源暂不可用：来源快照不属于当前用户',
@@ -24,6 +28,10 @@ const normalizeText = (value) => {
 
   return String(value).trim()
 }
+
+const isPlainObject = (value) => (
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+)
 
 const toFiniteNumber = (value) => {
   if (value === null || value === undefined || value === '') {
@@ -184,6 +192,283 @@ export const getFileFormatLabel = (filename) => {
 }
 
 /**
+ * Build the request sent to /chat_stream.
+ * Topic fields are intentionally available only when a non-empty cursor is
+ * supplied, so the initial request remains indistinguishable from ordinary
+ * RAG at the request boundary.
+ */
+export const buildChatStreamPayload = (
+  userId,
+  question,
+  { topicLimit, topicCursor } = {},
+) => {
+  const payload = {
+    user_id: userId,
+    question,
+  }
+  const normalizedCursor = normalizeText(topicCursor)
+
+  if (!normalizedCursor) {
+    return payload
+  }
+
+  const normalizedLimit = Number.isInteger(topicLimit) && topicLimit > 0
+    ? topicLimit
+    : TOPIC_PAGE_LIMIT
+
+  return {
+    ...payload,
+    topic_limit: normalizedLimit,
+    topic_cursor: normalizedCursor,
+  }
+}
+
+export const isTopicDocumentMatchesResponse = (data) => (
+  isPlainObject(data) &&
+  Object.prototype.hasOwnProperty.call(data, 'topic_document_matches') &&
+  isPlainObject(data.topic_document_matches)
+)
+
+const normalizeTopicItem = (item) => {
+  if (!isPlainObject(item)) {
+    return item
+  }
+
+  const matchedTopics = Array.isArray(item.matched_topics)
+    ? item.matched_topics
+    : Array.isArray(item.topics)
+      ? item.topics
+      : []
+
+  return {
+    ...item,
+    matched_topics: matchedTopics,
+    topics: Array.isArray(item.topics) ? item.topics : matchedTopics,
+  }
+}
+
+const deduplicateStructuredItems = (items) => {
+  const seenDocumentIds = new Set()
+
+  return items.filter((item) => {
+    const documentId = normalizeText(item?.document_id)
+    if (!documentId) {
+      return true
+    }
+    if (seenDocumentIds.has(documentId)) {
+      return false
+    }
+    seenDocumentIds.add(documentId)
+    return true
+  })
+}
+
+/**
+ * Normalize the P11 topic page while preserving backend item order.
+ * The current backend uses query_term/topics; the frontend contract uses
+ * query/matched_topics, so both names remain available to the panel.
+ */
+export const normalizeTopicDocumentMatches = (value) => {
+  if (!isPlainObject(value)) {
+    return null
+  }
+
+  const query = normalizeText(value.query || value.query_term)
+  const queryTerm = normalizeText(value.query_term || query)
+  const topic = isPlainObject(value.topic) ? { ...value.topic } : null
+  const items = Array.isArray(value.items)
+    ? deduplicateStructuredItems(value.items.map(normalizeTopicItem))
+    : []
+  const nextCursor = normalizeText(value.next_cursor)
+
+  return {
+    ...value,
+    query,
+    query_term: queryTerm,
+    topic,
+    items,
+    has_more: value.has_more === true,
+    next_cursor: nextCursor || null,
+  }
+}
+
+const hasDirectExactEvidence = (item) => (
+  isPlainObject(item) && [
+    'page',
+    'section',
+    'chunk_index',
+    'content_preview',
+    'content',
+    'content_truncated',
+    'chunk_id',
+  ].some(field => item[field] !== null && item[field] !== undefined)
+)
+
+const getExactItemEvidence = (item) => {
+  if (!isPlainObject(item)) {
+    return []
+  }
+
+  if (Array.isArray(item.evidence) && item.evidence.length > 0) {
+    return item.evidence
+  }
+
+  return hasDirectExactEvidence(item) ? [item] : []
+}
+
+const normalizeExactItem = (item) => {
+  if (!isPlainObject(item)) {
+    return item
+  }
+
+  return {
+    ...item,
+    evidence: Array.isArray(item.evidence) ? item.evidence : [],
+  }
+}
+
+const mergeExactItemsByDocumentId = (items) => {
+  const groups = []
+  const groupsByDocumentId = new Map()
+
+  for (const item of items) {
+    const documentId = normalizeText(item?.document_id)
+    if (!documentId || !isPlainObject(item)) {
+      groups.push(item)
+      continue
+    }
+
+    const evidence = getExactItemEvidence(item)
+    let group = groupsByDocumentId.get(documentId)
+
+    if (!group) {
+      group = {
+        ...item,
+        evidence: [...evidence],
+      }
+      groupsByDocumentId.set(documentId, group)
+      groups.push(group)
+      continue
+    }
+
+    group.evidence.push(...evidence)
+  }
+
+  return groups
+}
+
+export const getExactContentPreview = (evidence) => {
+  const preview = evidence?.content_preview
+  if (typeof preview === 'string' && preview.trim()) {
+    return preview
+  }
+
+  const content = evidence?.content
+  if (typeof content !== 'string' || !content) {
+    return ''
+  }
+
+  return `${Array.from(content).slice(0, EXACT_CONTENT_PREVIEW_LIMIT).join('')}...`
+}
+
+const normalizeCount = (value) => {
+  const count = toFiniteNumber(value)
+  return count !== null && count >= 0 ? Math.trunc(count) : null
+}
+
+export const getExactContentMatchCounts = (value) => {
+  const items = Array.isArray(value?.items) ? value.items : []
+  const fallbackCount = items.length
+
+  return {
+    matched_chunk_count: normalizeCount(value?.matched_chunk_count) ?? fallbackCount,
+    displayed_evidence_count: normalizeCount(value?.displayed_evidence_count) ?? fallbackCount,
+    omitted_evidence_count: normalizeCount(value?.omitted_evidence_count) ?? fallbackCount,
+  }
+}
+
+export const normalizeExactContentMatches = (value) => {
+  if (!isPlainObject(value)) {
+    return null
+  }
+
+  const query = normalizeText(value.query || value.query_term)
+  const queryTerm = normalizeText(value.query_term || query)
+  const items = Array.isArray(value.items)
+    ? mergeExactItemsByDocumentId(value.items.map(normalizeExactItem))
+    : []
+
+  return {
+    ...value,
+    query,
+    query_term: queryTerm,
+    items,
+    has_more: value.has_more === true,
+    next_cursor: normalizeText(value.next_cursor) || null,
+  }
+}
+
+const normalizeStructuredPage = (data, field, normalizer) => (
+  isPlainObject(data) && isPlainObject(data[field])
+    ? normalizer(data[field])
+    : null
+)
+
+/**
+ * Merge topic pages in server order. Document identity is document_id only;
+ * filenames are deliberately not part of the deduplication key.
+ */
+export const mergeTopicDocumentMatches = (previous, next) => {
+  const previousPage = normalizeTopicDocumentMatches(previous) || {
+    query: '',
+    query_term: '',
+    topic: null,
+    items: [],
+    has_more: false,
+    next_cursor: null,
+  }
+  const nextPage = normalizeTopicDocumentMatches(next) || {
+    query: '',
+    query_term: '',
+    topic: null,
+    items: [],
+    has_more: false,
+    next_cursor: null,
+  }
+  const seenDocumentIds = new Set()
+  const items = []
+
+  for (const item of [...previousPage.items, ...nextPage.items]) {
+    const documentId = normalizeText(item?.document_id)
+    if (documentId) {
+      if (seenDocumentIds.has(documentId)) {
+        continue
+      }
+      seenDocumentIds.add(documentId)
+    }
+    items.push(item)
+  }
+
+  return {
+    ...previousPage,
+    ...nextPage,
+    query: nextPage.query || previousPage.query,
+    query_term: nextPage.query_term || previousPage.query_term || nextPage.query,
+    topic: nextPage.topic || previousPage.topic || null,
+    items,
+    has_more: nextPage.has_more,
+    next_cursor: nextPage.next_cursor,
+  }
+}
+
+export const canLoadMoreTopicDocuments = (matches, loading = false) => (
+  !loading &&
+  isPlainObject(matches) &&
+  matches.has_more === true &&
+  Boolean(normalizeText(matches.next_cursor))
+)
+
+/**
  * @typedef {Object} AssistantMessage
  * @property {'assistant'} role
  * @property {string} content
@@ -194,6 +479,13 @@ export const getFileFormatLabel = (filename) => {
  * @property {Array<Object>} source_groups
  * @property {Array<Object>} summary_sources
  * @property {Array<Object>} candidate_preview
+ * @property {Object|null} topic_document_matches
+ * @property {Object|null} profile_mention_matches
+ * @property {Object|null} exact_content_matches
+ * @property {string} topic_original_question
+ * @property {boolean} topic_loading
+ * @property {string} topic_error
+ * @property {string} sourcesHistoryError
  * @property {Object} trace
  * @property {boolean} sourcesLoading
  * @property {string} sourcesError
@@ -210,6 +502,13 @@ export const createAssistantMessage = () => ({
   source_groups: [],
   summary_sources: [],
   candidate_preview: [],
+  topic_document_matches: null,
+  profile_mention_matches: null,
+  exact_content_matches: null,
+  topic_original_question: '',
+  topic_loading: false,
+  topic_error: '',
+  sourcesHistoryError: '',
   trace: {},
   sourcesLoading: false,
   sourcesError: '',
@@ -253,6 +552,13 @@ export const getSourcesHistoryState = (data, assistantRequestId) => {
       source_groups: [],
       summary_sources: [],
       candidate_preview: [],
+      topic_document_matches: null,
+      profile_mention_matches: null,
+      exact_content_matches: null,
+      topic_original_question: '',
+      topic_loading: false,
+      topic_error: '',
+      sourcesHistoryError: SOURCE_SNAPSHOT_MISMATCH_MESSAGE,
       trace: {},
       sourcesError: SOURCE_SNAPSHOT_MISMATCH_MESSAGE,
     }
@@ -265,6 +571,22 @@ export const getSourcesHistoryState = (data, assistantRequestId) => {
     source_groups: Array.isArray(data.source_groups) ? data.source_groups : [],
     summary_sources: Array.isArray(data.summary_sources) ? data.summary_sources : [],
     candidate_preview: Array.isArray(data.candidate_preview) ? data.candidate_preview : [],
+    topic_document_matches: isTopicDocumentMatchesResponse(data)
+      ? normalizeTopicDocumentMatches(data.topic_document_matches)
+      : null,
+    profile_mention_matches: normalizeStructuredPage(
+      data,
+      'profile_mention_matches',
+      normalizeTopicDocumentMatches,
+    ),
+    exact_content_matches: normalizeStructuredPage(
+      data,
+      'exact_content_matches',
+      normalizeExactContentMatches,
+    ),
+    topic_original_question: '',
+    topic_loading: false,
+    topic_error: '',
     trace: data.trace ?? {},
     sourcesError: '',
   }
@@ -281,6 +603,13 @@ export const createSourcesHistoryErrorState = (status) => ({
   source_groups: [],
   summary_sources: [],
   candidate_preview: [],
+  topic_document_matches: null,
+  profile_mention_matches: null,
+  exact_content_matches: null,
+  topic_original_question: '',
+  topic_loading: false,
+  topic_error: '',
+  sourcesHistoryError: getSourcesHistoryErrorMessage(status),
   trace: {},
   sourcesError: getSourcesHistoryErrorMessage(status),
 })

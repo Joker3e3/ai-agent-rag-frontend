@@ -6,13 +6,23 @@ import { onMounted } from 'vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import DocumentTypeConfirmDialog from '../components/DocumentTypeConfirmDialog.vue'
+import ExactContentMatchesPanel from '../components/ExactContentMatchesPanel.vue'
+import ProfileMentionMatchesPanel from '../components/ProfileMentionMatchesPanel.vue'
 import RagSourcesPanel from '../components/RagSourcesPanel.vue'
+import TopicDocumentMatchesPanel from '../components/TopicDocumentMatchesPanel.vue'
 import {
+  TOPIC_PAGE_LIMIT,
+  buildChatStreamPayload,
   buildSourcesHistoryPayload,
+  canLoadMoreTopicDocuments,
   createAssistantMessage,
   createSourcesHistoryErrorState,
   getRequestIdFromResponse,
   getSourcesHistoryState,
+  getSourcesHistoryErrorMessage,
+  isTopicDocumentMatchesResponse,
+  mergeTopicDocumentMatches,
+  normalizeTopicDocumentMatches,
 } from '../services/ragSources'
 import {
   canShowResumeConfirmation,
@@ -313,6 +323,36 @@ const updateMessageAt = (messageIndex, patch) => {
   })
 }
 
+const consumeChatStream = async (
+  response,
+  onChunk = null,
+  requestGeneration = conversationGeneration,
+) => {
+  if (!response.body) {
+    throw new Error('chat_stream response body is unavailable')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+
+  while (true) {
+    const { done, value } = await reader.read()
+
+    if (requestGeneration !== conversationGeneration) {
+      return false
+    }
+
+    if (done) {
+      return true
+    }
+
+    const chunk = decoder.decode(value)
+    if (typeof onChunk === 'function') {
+      await onChunk(chunk)
+    }
+  }
+}
+
 const loadSourcesHistory = async (
   assistantIndex,
   requestId,
@@ -341,6 +381,12 @@ const loadSourcesHistory = async (
     source_groups: [],
     summary_sources: [],
     candidate_preview: [],
+    topic_document_matches: null,
+    profile_mention_matches: null,
+    exact_content_matches: null,
+    topic_loading: false,
+    topic_error: '',
+    sourcesHistoryError: '',
     trace: {},
   })
 
@@ -356,13 +402,145 @@ const loadSourcesHistory = async (
     updateMessageAt(assistantIndex, {
       ...sourceState,
       sourcesLoading: false,
+      topic_original_question: messages.value[assistantIndex]?.topic_original_question || '',
     })
   } catch (error) {
     console.error('Failed to load sources history', error)
     updateMessageAt(assistantIndex, {
       ...createSourcesHistoryErrorState(error.response?.status),
       sourcesLoading: false,
+      topic_original_question: messages.value[assistantIndex]?.topic_original_question || '',
     })
+  }
+}
+
+const loadMoreTopicDocuments = async (assistantIndex) => {
+  const currentMessage = messages.value[assistantIndex]
+  const currentMatches = currentMessage?.topic_document_matches
+  const requestGeneration = conversationGeneration
+
+  if (!currentMessage || !canLoadMoreTopicDocuments(currentMatches, currentMessage.topic_loading)) {
+    return
+  }
+
+  const originalQuestion = currentMessage.topic_original_question
+  const topicCursor = currentMatches.next_cursor?.trim() || ''
+  if (!originalQuestion || !topicCursor) {
+    return
+  }
+
+  updateMessageAt(assistantIndex, {
+    topic_loading: true,
+    topic_error: '',
+  })
+  activeRequestCount += 1
+  loading.value = true
+
+  try {
+    const requestData = buildChatStreamPayload(USER_ID, originalQuestion, {
+      topicLimit: TOPIC_PAGE_LIMIT,
+      topicCursor,
+    })
+    const response = await fetch(`${API_BASE_URL}/chat_stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestData),
+    })
+
+    const paginationRequestId = getRequestIdFromResponse(response)
+    const ragCommand = getRagCommandFromResponse(response)
+    if (ragCommand === 'reset') {
+      try {
+        await parseResetResponse(response)
+      } catch (resetError) {
+        console.error(resetError)
+      }
+      updateMessageAt(assistantIndex, {
+        topic_loading: false,
+        topic_error: '分页请求未返回主题结果，请重新提问',
+      })
+      return
+    }
+
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
+    if (!response.ok) {
+      const error = new Error(`chat_stream failed with status ${response.status}`)
+      error.status = response.status
+      throw error
+    }
+
+    await consumeChatStream(response, null, requestGeneration)
+
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
+    if (!paginationRequestId) {
+      updateMessageAt(assistantIndex, {
+        topic_loading: false,
+        topic_error: getSourcesHistoryErrorMessage(400),
+      })
+      return
+    }
+
+    const requestPayload = buildSourcesHistoryPayload(USER_ID, paginationRequestId)
+    const historyResponse = await axios.post(`${API_BASE_URL}/sources_history`, requestPayload)
+
+    if (requestGeneration !== conversationGeneration) {
+      return
+    }
+
+    const pageState = getSourcesHistoryState(historyResponse.data, paginationRequestId)
+    if (pageState.sourcesError) {
+      updateMessageAt(assistantIndex, {
+        topic_loading: false,
+        topic_error: pageState.sourcesError,
+      })
+      return
+    }
+
+    if (!isTopicDocumentMatchesResponse(historyResponse.data)) {
+      updateMessageAt(assistantIndex, {
+        topic_loading: false,
+        topic_error: '主题分页结果暂不可用，已保留当前结果',
+      })
+      return
+    }
+
+    const nextMatches = normalizeTopicDocumentMatches(
+      historyResponse.data.topic_document_matches,
+    )
+    const latestMessage = messages.value[assistantIndex]
+    updateMessageAt(assistantIndex, {
+      request_id: paginationRequestId,
+      context_request_id: pageState.context_request_id,
+      topic_document_matches: mergeTopicDocumentMatches(
+        latestMessage?.topic_document_matches,
+        nextMatches,
+      ),
+      topic_loading: false,
+      topic_error: '',
+      sources: [],
+      source_groups: [],
+      summary_sources: [],
+      candidate_preview: [],
+      evidence_status: null,
+      sourcesError: '',
+    })
+  } catch (error) {
+    console.error('Failed to load more topic documents', error)
+    updateMessageAt(assistantIndex, {
+      topic_loading: false,
+      topic_error: getSourcesHistoryErrorMessage(error.response?.status || error.status),
+    })
+  } finally {
+    activeRequestCount = Math.max(activeRequestCount - 1, 0)
+    loading.value = activeRequestCount > 0
   }
 }
 
@@ -373,21 +551,22 @@ const sendMessage = async () => {
   }
 
   // 先把用户消息加入聊天列表
+  const originalQuestion = question.value
   messages.value.push({
     role: 'user',
-    content: question.value,
+    content: originalQuestion,
   })
 
-  const requestData = {
-    user_id: USER_ID,
-    question: question.value,
-  }
+  const requestData = buildChatStreamPayload(USER_ID, originalQuestion)
   // 清空输入框
   question.value = ''
   activeRequestCount += 1
   loading.value = true
 
-  const aiMessage = createAssistantMessage()
+  const aiMessage = {
+    ...createAssistantMessage(),
+    topic_original_question: originalQuestion,
+  }
   messages.value.push(aiMessage)
   const assistantIndex = messages.value.length - 1
   const requestGeneration = conversationGeneration
@@ -429,32 +608,7 @@ const sendMessage = async () => {
       throw new Error(`chat_stream failed with status ${response.status}`)
     }
 
-    if (!response.body) {
-      throw new Error('chat_stream response body is unavailable')
-    }
-
-    // 获取流读取器
-    const reader = response.body.getReader()
-
-    // 文本解码器
-    const decoder = new TextDecoder('utf-8')
-
-    // 持续读取
-    while (true) {
-      // 读取流数据
-      const { done, value } = await reader.read()
-
-      if (requestGeneration !== conversationGeneration) {
-        break
-      }
-
-      // done=true 表示结束
-      if (done) {
-        break
-      }
-
-      // 解码二进制数据
-      const chunk = decoder.decode(value)
+    await consumeChatStream(response, async (chunk) => {
       const currentMessage = messages.value[assistantIndex]
 
       // 追加到 AI 消息
@@ -464,7 +618,8 @@ const sendMessage = async () => {
         })
       }
       await scrollToBottom()
-    }
+    }, requestGeneration)
+
     if (requestGeneration !== conversationGeneration) {
       return
     }
@@ -642,7 +797,31 @@ const startPollingDocuments = () => {
             <div class="ai-message">{{ msg.content }}</div>
           </div>
 
-          <RagSourcesPanel v-if="msg.role === 'assistant'" :message="msg" />
+          <div
+            v-if="msg.role === 'assistant' && msg.sourcesHistoryError"
+            class="sources-history-error"
+          >
+            {{ msg.sourcesHistoryError }}
+          </div>
+          <TopicDocumentMatchesPanel
+            v-else-if="msg.role === 'assistant' && msg.topic_document_matches !== null && msg.topic_document_matches !== undefined"
+            :matches="msg.topic_document_matches"
+            :loading="msg.topic_loading"
+            :error="msg.topic_error"
+            @load-more="loadMoreTopicDocuments(index)"
+          />
+          <ProfileMentionMatchesPanel
+            v-else-if="msg.role === 'assistant' && msg.profile_mention_matches !== null && msg.profile_mention_matches !== undefined"
+            :matches="msg.profile_mention_matches"
+          />
+          <ExactContentMatchesPanel
+            v-else-if="msg.role === 'assistant' && msg.exact_content_matches !== null && msg.exact_content_matches !== undefined"
+            :matches="msg.exact_content_matches"
+          />
+          <RagSourcesPanel
+            v-else-if="msg.role === 'assistant' && !msg.sourcesHistoryError"
+            :message="msg"
+          />
         </div>
       </div>
 
@@ -664,6 +843,14 @@ const startPollingDocuments = () => {
   gap: 20px;
   height: calc(90vh - 56px);
   min-width: 0;
+}
+
+.sources-history-error {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #b42318;
+  background: #fff5f5;
 }
 
 /* 左侧知识库 */
